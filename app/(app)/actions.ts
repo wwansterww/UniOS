@@ -1,0 +1,228 @@
+"use server";
+
+import { randomBytes } from "node:crypto";
+import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
+import { after } from "next/server";
+import { db, withUser } from "@/lib/db";
+import { requireUser } from "@/lib/auth";
+import { isLocale } from "@/lib/i18n";
+import { logEvent, markDone, recomputeForDeadline, recomputeForStudent, undoDone } from "@/lib/reminders/engine";
+import { OFFSET_CHOICES } from "@/lib/reminders/plan";
+import { parseLocalInput } from "@/lib/time";
+import { botToken, botUsername, sendMessage } from "@/lib/telegram/api";
+import { dictionaries } from "@/lib/i18n";
+import { syncCanvas, validateFeedUrl } from "@/lib/canvas";
+import { dispatchNow } from "@/lib/jobs";
+
+export type Result = { ok: boolean; message?: string; url?: string };
+
+const refresh = () => revalidatePath("/", "layout");
+
+/** Can this user see the deadline (RLS)? */
+async function visibleDeadline(userId: string, id: string) {
+  const rows = await withUser(userId, (q) => q<{ id: string; owner_id: string | null }>(`select id, owner_id from deadlines where id = $1`, [id]));
+  return rows[0] ?? null;
+}
+
+export async function setDone(deadlineId: string, done: boolean): Promise<Result> {
+  const user = await requireUser("student");
+  if (!(await visibleDeadline(user.id, deadlineId))) return { ok: false };
+  const d = await db();
+  await d.tx((q) => (done ? markDone(q, user.id, deadlineId) : undoDone(q, user.id, deadlineId)));
+  refresh();
+  return { ok: true };
+}
+
+export async function addPersonalTask(form: FormData): Promise<Result> {
+  const user = await requireUser("student");
+  const title = String(form.get("title") ?? "").trim().slice(0, 300);
+  const due = parseLocalInput(String(form.get("due") ?? ""));
+  if (!title || !due) return { ok: false, message: dictionaries[user.locale].common.error };
+  const d = await db();
+  await d.tx(async (q) => {
+    const [row] = await q<{ id: string }>(
+      `insert into deadlines (owner_id, title, due_at, description, link, created_by) values ($1, $2, $3, $4, $5, $1) returning id`,
+      [user.id, title, due.toISOString(), String(form.get("description") ?? "").slice(0, 2000), String(form.get("link") ?? "").trim() || null],
+    );
+    await recomputeForDeadline(q, row.id);
+    await logEvent(q, user.id, "personal_task_created", {});
+  });
+  after(() => dispatchNow(d));
+  refresh();
+  return { ok: true };
+}
+
+export async function deletePersonalTask(id: string): Promise<Result> {
+  const user = await requireUser("student");
+  const d = await db();
+  await d.tx(async (q) => {
+    await q(`update deadlines set deleted_at = now(), updated_at = now() where id = $1 and owner_id = $2`, [id, user.id]);
+    await q(`delete from reminders where deadline_id = $1 and sent_at is null`, [id]);
+  });
+  refresh();
+  return { ok: true };
+}
+
+export async function markAnnouncementRead(id: string): Promise<Result> {
+  const user = await requireUser("student");
+  const visible = await withUser(user.id, (q) => q(`select 1 from announcements where id = $1`, [id]));
+  if (!visible.length) return { ok: false };
+  const d = await db();
+  await d.q(`insert into announcement_reads (announcement_id, student_id) values ($1, $2) on conflict do nothing`, [id, user.id]);
+  await d.q(`update notifications set read_at = now() where user_id = $1 and read_at is null and payload->>'announcementId' = $2`, [user.id, id]);
+  refresh();
+  return { ok: true };
+}
+
+export async function markNotificationsRead(ids: string[] | "all"): Promise<Result> {
+  const user = await requireUser();
+  const d = await db();
+  if (ids === "all") await d.q(`update notifications set read_at = now() where user_id = $1 and read_at is null`, [user.id]);
+  else
+    await d.q(`update notifications set read_at = now() where user_id = $1 and read_at is null and id::text = any(string_to_array($2, ','))`, [
+      user.id,
+      ids.join(","),
+    ]);
+  refresh();
+  return { ok: true };
+}
+
+export async function savePrefs(form: FormData): Promise<Result> {
+  const user = await requireUser();
+  const offsets = form
+    .getAll("offsets")
+    .map(Number)
+    .filter((o) => (OFFSET_CHOICES as readonly number[]).includes(o));
+  const channels = form.getAll("channels").map(String).filter((c) => ["telegram", "email", "in_app"].includes(c));
+  const time = (v: FormDataEntryValue | null, def: string) => (/^\d{2}:\d{2}$/.test(String(v)) ? String(v) : def);
+  const d = await db();
+  await d.tx(async (q) => {
+    await q(
+      `insert into notification_prefs (user_id, offsets_minutes, instant_enabled, channels, quiet_start, quiet_end, digest_enabled)
+       values ($1, coalesce(string_to_array(nullif($2, ''), ',')::int[], '{}'), $3, coalesce(string_to_array(nullif($4, ''), ','), '{}'), $5::time, $6::time, $7)
+       on conflict (user_id) do update set offsets_minutes = excluded.offsets_minutes, instant_enabled = excluded.instant_enabled,
+         channels = excluded.channels, quiet_start = excluded.quiet_start, quiet_end = excluded.quiet_end, digest_enabled = excluded.digest_enabled`,
+      [
+        user.id,
+        offsets.join(","),
+        form.get("instant") === "on",
+        channels.join(","),
+        time(form.get("quiet_start"), "23:00"),
+        time(form.get("quiet_end"), "08:00"),
+        form.get("digest") === "on",
+      ],
+    );
+    if (user.role === "student") await recomputeForStudent(q, user.id);
+    await logEvent(q, user.id, "prefs_saved", { offsets, channels });
+  });
+  refresh();
+  return { ok: true, message: dictionaries[user.locale].common.saved };
+}
+
+export async function joinGroup(form: FormData): Promise<Result> {
+  const user = await requireUser("student");
+  const t = dictionaries[user.locale];
+  const code = String(form.get("code") ?? "").trim().toUpperCase();
+  const d = await db();
+  const [g] = await d.q<{ id: string; name: string }>(`select id, name from groups where upper(invite_code) = $1`, [code]);
+  if (!g) return { ok: false, message: t.profile.badInvite };
+  await d.tx(async (q) => {
+    await q(`insert into group_members (group_id, student_id) values ($1, $2) on conflict do nothing`, [g.id, user.id]);
+    await recomputeForStudent(q, user.id);
+    await logEvent(q, user.id, "group_joined", { group_id: g.id });
+  });
+  refresh();
+  return { ok: true, message: t.profile.joined(g.name) };
+}
+
+export async function leaveGroup(groupId: string): Promise<Result> {
+  const user = await requireUser("student");
+  const d = await db();
+  await d.tx(async (q) => {
+    await q(`delete from group_members where group_id = $1 and student_id = $2`, [groupId, user.id]);
+    await recomputeForStudent(q, user.id);
+  });
+  refresh();
+  return { ok: true };
+}
+
+export async function telegramLink(): Promise<Result> {
+  const user = await requireUser();
+  if (!botToken() || !botUsername()) return { ok: false, message: dictionaries[user.locale].profile.tgNoBot };
+  const token = randomBytes(16).toString("hex");
+  const d = await db();
+  await d.q(`insert into telegram_link_tokens (token, user_id, expires_at) values ($1, $2, now() + interval '30 minutes')`, [token, user.id]);
+  return { ok: true, url: `https://t.me/${botUsername()}?start=${token}` };
+}
+
+export async function disconnectTelegram(): Promise<Result> {
+  const user = await requireUser();
+  const d = await db();
+  await d.q(`update profiles set telegram_chat_id = null where id = $1`, [user.id]);
+  refresh();
+  return { ok: true };
+}
+
+export async function telegramTest(): Promise<Result> {
+  const user = await requireUser();
+  const t = dictionaries[user.locale];
+  if (!user.telegram_chat_id || !botToken()) return { ok: false, message: t.profile.tgNoBot };
+  try {
+    await sendMessage(user.telegram_chat_id, t.bot.test);
+    return { ok: true, message: t.profile.tgTestSent };
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+}
+
+export async function resetIcsToken(): Promise<Result> {
+  const user = await requireUser();
+  const d = await db();
+  await d.q(`update profiles set ics_token = $2 where id = $1`, [user.id, randomBytes(16).toString("hex")]);
+  refresh();
+  return { ok: true };
+}
+
+export async function saveCanvas(form: FormData): Promise<Result> {
+  const user = await requireUser("student");
+  const t = dictionaries[user.locale];
+  const raw = String(form.get("url") ?? "").trim();
+  const url = validateFeedUrl(raw);
+  if (!url) return { ok: false, message: t.common.error + ": https://…ics" };
+  const d = await db();
+  await d.q(`update profiles set canvas_feed_url = $2, canvas_error = null where id = $1`, [user.id, url.toString()]);
+  try {
+    const n = await syncCanvas(d, user.id);
+    after(() => dispatchNow(d));
+    refresh();
+    return { ok: true, message: t.profile.canvasSynced(n) };
+  } catch (e) {
+    refresh();
+    return { ok: false, message: `${t.common.error}: ${(e as Error).message}` };
+  }
+}
+
+export async function removeCanvas(): Promise<Result> {
+  const user = await requireUser("student");
+  const d = await db();
+  await d.q(`update profiles set canvas_feed_url = null, canvas_synced_at = null, canvas_error = null where id = $1`, [user.id]);
+  refresh();
+  return { ok: true };
+}
+
+export async function setLocale(locale: string): Promise<Result> {
+  const user = await requireUser();
+  if (!isLocale(locale)) return { ok: false };
+  const d = await db();
+  await d.q(`update profiles set locale = $2 where id = $1`, [user.id, locale]);
+  (await cookies()).set("locale", locale, { path: "/", maxAge: 60 * 60 * 24 * 365 });
+  refresh();
+  return { ok: true };
+}
+
+export async function openedReminder(reminderId: string) {
+  const user = await requireUser();
+  const d = await db();
+  await d.q(`update reminders set opened_at = coalesce(opened_at, now()) where id = $1 and student_id = $2`, [reminderId, user.id]);
+}
