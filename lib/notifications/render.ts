@@ -13,7 +13,12 @@ export type NotificationKind =
   | "reg_open"
   | "reg_closing"
   | "reminder"
-  | "digest";
+  | "digest"
+  | "grade_new"
+  | "absence_marked"
+  | "absence_warning"
+  | "excuse_new"
+  | "excuse_reviewed";
 
 export interface NotificationPayload {
   course?: string;
@@ -29,6 +34,12 @@ export interface NotificationPayload {
   important?: boolean;
   deadlineId?: string;
   announcementId?: string;
+  assessmentId?: string;
+  absent?: number;
+  allowed?: number;
+  approved?: boolean;
+  teacher?: string;
+  sessionId?: string;
   classes?: number;
   deadlines?: number;
   lines?: string[];
@@ -77,6 +88,25 @@ export function renderNotification(t: Dict, l: Locale, kind: string, p: Notifica
       return { title: p.urgent ? t.notif.urgent : t.notif.reminder, body: `${what} — ${formatDateTime(new Date(p.due!), l)}` };
     case "digest":
       return { title: t.bot.digest, body: t.today.summary(p.classes ?? 0, p.deadlines ?? 0) };
+    case "grade_new":
+      return { title: t.notif.newGrade, body: what };
+    case "absence_marked":
+    case "absence_warning": {
+      const absent = p.absent ?? 0;
+      const allowed = p.allowed ?? 0;
+      const left = allowed - absent;
+      const state = left < 0 ? t.attendance.over(-left) : left === 0 ? t.attendance.atLimit : left === 1 ? t.attendance.lastOne : t.attendance.closest(p.course ?? "", left);
+      return {
+        title: kind === "absence_marked" ? t.notif.absenceMarked : t.notif.absenceWarning,
+        body: [`${p.course ?? ""}${p.old ? ` · ${d(p.old)}` : ""} — ${t.attendance.absentOf(absent, allowed)}`, left <= 1 ? state : "", p.teacher ? `${t.profile.teacher}: ${p.teacher}` : ""]
+          .filter(Boolean)
+          .join("\n"),
+      };
+    }
+    case "excuse_new":
+      return { title: t.notif.excuseNew, body: [p.title, p.course, d(p.old)].filter(Boolean).join(" · ") };
+    case "excuse_reviewed":
+      return { title: p.approved ? t.notif.excuseApproved : t.notif.excuseRejected, body: [p.course, d(p.old)].filter(Boolean).join(" · ") };
     default:
       return { title: p.title ?? kind, body: p.body ?? "" };
   }

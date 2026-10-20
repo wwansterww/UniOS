@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { Bell, CalendarPlus, GraduationCap, Palette, Send, Users } from "lucide-react";
+import Link from "next/link";
+import { ArrowRight, Bell, CalendarPlus, GraduationCap, LineChart, Palette, Send, Users } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getT } from "@/lib/i18n/server";
@@ -54,7 +55,7 @@ export default async function ProfilePage() {
           <p className="truncate text-sm text-muted">{user.email}</p>
         </div>
         <Badge tone={student ? "lavender" : "accent"} className="ml-auto">
-          {student ? t.profile.student : t.profile.teacher}
+          {student ? t.profile.student : user.role === "advisor" ? t.profile.advisor : t.profile.teacher}
         </Badge>
       </Card>
 
@@ -75,7 +76,7 @@ export default async function ProfilePage() {
       )}
 
       <Section id="notifications" icon={Bell} title={t.profile.notif}>
-        <PrefsForm prefs={prefs} role={user.role} />
+        <PrefsForm prefs={prefs} role={student ? "student" : "teacher"} />
       </Section>
 
       <Section icon={Send} title={t.profile.telegram}>
@@ -98,6 +99,12 @@ export default async function ProfilePage() {
       <Section icon={Palette} title={t.profile.appearance}>
         <Appearance />
       </Section>
+
+      {user.role === "teacher" && (
+        <Link href="/metrics" className="flex items-center gap-2 px-1 py-2 text-sm text-muted hover:text-fg">
+          <LineChart size={16} /> {t.teacher.metricsLink} <ArrowRight size={14} />
+        </Link>
+      )}
     </div>
   );
 }

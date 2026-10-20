@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
-import { getUser } from "@/lib/auth";
+import { getUser, homeFor } from "@/lib/auth";
 import LoginPage from "./login/page";
 
 export default async function Home() {
   const user = await getUser();
-  if (user) redirect(user.role === "teacher" ? "/teacher" : "/today");
+  if (user) redirect(homeFor(user.role));
   return <LoginPage params={Promise.resolve({})} searchParams={Promise.resolve({})} />;
 }

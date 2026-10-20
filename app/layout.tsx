@@ -14,7 +14,9 @@ export const metadata: Metadata = {
   title: { default: "UniOS", template: "%s · UniOS" },
   description: "Расписание, дедлайны и объявления Нархоза — в одном месте",
   appleWebApp: { capable: true, title: "UniOS", statusBarStyle: "black-translucent" },
-  icons: { icon: "/icon.svg", apple: "/icon-512.png" },
+  icons: { icon: "/icon.svg", apple: "/apple-icon.png" },
+  // Link previews (Telegram, WhatsApp…) show the university logo.
+  openGraph: { title: "UniOS · Narxoz University", siteName: "UniOS", images: [{ url: "/brand/narxoz-square.png", width: 447, height: 447 }] },
 };
 
 export const viewport: Viewport = {

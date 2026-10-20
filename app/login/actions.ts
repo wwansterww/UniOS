@@ -5,8 +5,8 @@ import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
-import { emailAllowed, endSession, isDemo, startSession } from "@/lib/auth";
-import { DEMO_STUDENT, DEMO_TEACHER } from "@/lib/db/seed";
+import { emailAllowed, endSession, homeFor, isDemo, safeNext, startSession } from "@/lib/auth";
+import { DEMO_ADVISOR, DEMO_STUDENT, DEMO_TEACHER } from "@/lib/db/seed";
 import { dictionaries, isLocale } from "@/lib/i18n";
 import { logEvent } from "@/lib/reminders/engine";
 import { sendEmail } from "@/lib/notifications/channels";
@@ -19,7 +19,8 @@ async function dict() {
   return dictionaries[isLocale(c) ? c : "ru"];
 }
 
-const home = (role: string) => (role === "teacher" ? "/teacher" : "/today");
+/** Where to go after signing in: back to the page that asked for it (e.g. a QR check-in), else the role's home. */
+const home = (role: string, form?: FormData) => safeNext(form?.get("next")) ?? homeFor(role);
 
 export async function signIn(_: AuthState, form: FormData): Promise<AuthState> {
   const t = await dict();
@@ -32,7 +33,7 @@ export async function signIn(_: AuthState, form: FormData): Promise<AuthState> {
   );
   if (!u?.password_hash || !(await bcrypt.compare(password, u.password_hash))) return { error: t.auth.wrong };
   await startSession(u.id);
-  redirect(home(u.role));
+  redirect(home(u.role, form));
 }
 
 export async function signUp(_: AuthState, form: FormData): Promise<AuthState> {
@@ -58,7 +59,7 @@ export async function signUp(_: AuthState, form: FormData): Promise<AuthState> {
   await d.q(`insert into notification_prefs (user_id) values ($1) on conflict do nothing`, [rows[0].id]);
   await logEvent(d.q, rows[0].id, "signup", { role });
   await startSession(rows[0].id);
-  redirect(home(role));
+  redirect(home(role, form));
 }
 
 export async function sendMagicLink(_: AuthState, form: FormData): Promise<AuthState> {
@@ -82,13 +83,14 @@ export async function sendMagicLink(_: AuthState, form: FormData): Promise<AuthS
   return { info: t.auth.magicSent };
 }
 
-export async function demoSignIn(role: "student" | "teacher") {
+export async function demoSignIn(role: "student" | "teacher" | "advisor", next?: string) {
   if (!isDemo()) return;
   const d = await db();
-  const [u] = await d.q<{ id: string }>(`select id from profiles where email = $1`, [role === "teacher" ? DEMO_TEACHER : DEMO_STUDENT]);
+  const email = role === "teacher" ? DEMO_TEACHER : role === "advisor" ? DEMO_ADVISOR : DEMO_STUDENT;
+  const [u] = await d.q<{ id: string }>(`select id from profiles where email = $1`, [email]);
   if (!u) return;
   await startSession(u.id);
-  redirect(home(role));
+  redirect(safeNext(next) ?? homeFor(role));
 }
 
 export async function signOut() {

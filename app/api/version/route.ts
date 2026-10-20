@@ -14,7 +14,9 @@ export async function GET() {
          (select max(created_at) from announcements), (select count(*) from announcements where is_pinned),
          (select max(created_at) from notifications where user_id = app_uid()),
          (select count(*) from deadline_status), (select count(*) from announcement_reads),
-         (select count(*) from group_members)) as v`,
+         (select count(*) from group_members),
+         (select count(*) from assessments), (select max(updated_at) from grades), (select count(*) from grades),
+         (select max(marked_at) from attendance), (select count(*) from attendance)) as v`,
     ),
   );
   return NextResponse.json({ v: row.v }, { headers: { "cache-control": "no-store" } });

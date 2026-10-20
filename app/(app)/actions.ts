@@ -14,6 +14,7 @@ import { botToken, botUsername, sendMessage } from "@/lib/telegram/api";
 import { dictionaries } from "@/lib/i18n";
 import { syncCanvas, validateFeedUrl } from "@/lib/canvas";
 import { dispatchNow } from "@/lib/jobs";
+import { notify } from "@/lib/notifications/notify";
 
 export type Result = { ok: boolean; message?: string; url?: string };
 
@@ -225,4 +226,54 @@ export async function openedReminder(reminderId: string) {
   const user = await requireUser();
   const d = await db();
   await d.q(`update reminders set opened_at = coalesce(opened_at, now()) where id = $1 and student_id = $2`, [reminderId, user.id]);
+}
+
+// ---------- medical certificates (справки) ----------
+
+const EXCUSE_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+
+/** A student attaches a reason and, optionally, a photo/PDF to one of their absences; the class's teacher reviews it. */
+export async function submitExcuse(form: FormData): Promise<Result> {
+  const user = await requireUser("student");
+  const t = dictionaries[user.locale];
+  const sessionId = String(form.get("session_id") ?? "");
+  const reason = String(form.get("reason") ?? "").trim().slice(0, 1000);
+  const file = form.get("file");
+  let bytes: Buffer | null = null;
+  let type: string | null = null;
+  let name: string | null = null;
+  if (file instanceof File && file.size > 0) {
+    if (file.size > 4 * 1024 * 1024) return { ok: false, message: t.attendance.excuseTooBig };
+    if (!EXCUSE_TYPES.includes(file.type)) return { ok: false, message: t.attendance.excuseBadType };
+    bytes = Buffer.from(await file.arrayBuffer());
+    type = file.type;
+    name = file.name.slice(0, 120);
+  }
+  if (!/^[0-9a-f-]{36}$/.test(sessionId) || (!reason && !bytes)) return { ok: false, message: t.common.error };
+  const d = await db();
+  const res = await d.tx(async (q): Promise<Result> => {
+    const [a] = await q<{ status: string; teacher_id: string; course_title: string; starts_at: Date }>(
+      `select a.status, c.teacher_id, c.title as course_title, cs.starts_at
+         from attendance a join class_sessions cs on cs.id = a.session_id join courses c on c.id = cs.course_id
+        where a.session_id = $1 and a.student_id = $2`,
+      [sessionId, user.id],
+    );
+    if (!a || a.status !== "absent") return { ok: false, message: t.common.error };
+    const [ex] = await q<{ status: string }>(`select status from excuses where session_id = $1 and student_id = $2`, [sessionId, user.id]);
+    if (ex && ex.status !== "rejected") return { ok: false, message: t.attendance.excusePending };
+    await q(
+      `insert into excuses (session_id, student_id, reason, file, file_type, file_name) values ($1, $2, $3, $4, $5, $6)
+       on conflict (session_id, student_id) do update set reason = excluded.reason, file = excluded.file, file_type = excluded.file_type,
+         file_name = excluded.file_name, status = 'pending', reviewed_by = null, reviewed_at = null, created_at = now()`,
+      [sessionId, user.id, reason, bytes, type, name],
+    );
+    await notify(q, [a.teacher_id], "excuse_new", { course: a.course_title, title: user.full_name, old: new Date(a.starts_at).toISOString() }, {
+      link: "/teacher/attendance?view=excuses",
+      deliver: false,
+    });
+    await logEvent(q, user.id, "excuse_submitted", { session_id: sessionId, file: !!bytes });
+    return { ok: true, message: t.attendance.excuseSent };
+  });
+  refresh();
+  return res;
 }

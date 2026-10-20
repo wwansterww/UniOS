@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { startSession } from "@/lib/auth";
+import { homeFor, startSession } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get("token") ?? "";
@@ -12,5 +12,5 @@ export async function GET(req: NextRequest) {
   const [u] = row ? await d.q<{ id: string; role: string }>(`select id, role from profiles where email = $1`, [row.email]) : [];
   if (!u) return NextResponse.redirect(new URL("/login?expired=1", req.url));
   await startSession(u.id);
-  return NextResponse.redirect(new URL(u.role === "teacher" ? "/teacher" : "/today", req.url));
+  return NextResponse.redirect(new URL(homeFor(u.role), req.url));
 }

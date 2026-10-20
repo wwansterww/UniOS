@@ -4,7 +4,7 @@ import { requireUser } from "@/lib/auth";
 import { getT } from "@/lib/i18n/server";
 import { teacherCourses, teacherGroups } from "@/lib/queries";
 import { Card, CourseDot, Empty, PageTitle, SectionTitle } from "@/components/ui";
-import { DetachGroup, GroupTools, InviteCode, NewCourseForm } from "./forms";
+import { CreditsSelect, DetachGroup, GroupTools, InviteCode, NewCourseForm } from "./forms";
 
 export const metadata: Metadata = { title: "Курсы" };
 
@@ -27,10 +27,11 @@ export default async function CoursesPage() {
           <Card key={c.id}>
             <div className="flex items-center gap-3">
               <span className="h-10 w-1.5 rounded-full" style={{ background: c.color }} />
-              <div>
+              <div className="min-w-0 flex-1">
                 <p className="text-xs text-muted">{c.code}</p>
                 <h2 className="text-xl font-semibold">{c.title}</h2>
               </div>
+              <CreditsSelect courseId={c.id} value={c.credits} />
             </div>
             <div className="mt-4 grid gap-2 sm:grid-cols-2">
               {c.groups.map((g) => (

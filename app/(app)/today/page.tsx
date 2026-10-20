@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowRight, Bell, CalendarCheck, CalendarClock, ChevronRight, ClipboardList, Megaphone, type LucideIcon } from "lucide-react";
+import { AlertTriangle, ArrowRight, ScanLine, Bell, CalendarCheck, CalendarClock, ChevronRight, ClipboardList, GraduationCap, Megaphone, type LucideIcon } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { getT } from "@/lib/i18n/server";
-import { announcements, myGroups, notifications, registrationWindows, sessionsBetween, studentDeadlines } from "@/lib/queries";
+import { announcements, myAttendance, myGrades, myGroups, notifications, registrationWindows, sessionsBetween, studentDeadlines } from "@/lib/queries";
+import { absenceAllowance, absenceRisk, courseScore, currentTerm, fmtGpa, gpa } from "@/lib/journal";
 import { renderNotification } from "@/lib/notifications/render";
 import { DAY, dateKey, formatDay, formatLongDay, formatTime, startOfDay, zoned } from "@/lib/time";
 import { Badge, Card, Empty, PageTitle, SectionTitle, buttonClass } from "@/components/ui";
@@ -27,7 +28,9 @@ const kindIcon = (kind: string): LucideIcon =>
         ? CalendarCheck
         : kind === "announcement" || kind === "read_reminder"
           ? Megaphone
-          : Bell;
+          : kind === "grade_new"
+            ? GraduationCap
+            : Bell;
 
 export const metadata: Metadata = { title: "Сегодня" };
 
@@ -36,7 +39,7 @@ export default async function TodayPage() {
   const { t, locale } = await getT();
   const now = new Date();
   const dayStart = startOfDay(now);
-  const [groups, upcoming, today, deadlines, inbox, anns, windows] = await Promise.all([
+  const [groups, upcoming, today, deadlines, inbox, anns, windows, grades, attendance] = await Promise.all([
     myGroups(user),
     sessionsBetween(user, now, new Date(now.getTime() + 7 * DAY)),
     sessionsBetween(user, dayStart, new Date(dayStart.getTime() + DAY)),
@@ -44,6 +47,8 @@ export default async function TodayPage() {
     notifications(user, { unreadOnly: true, excludeReminders: true, limit: 6 }),
     announcements(user, { unreadOnly: true }),
     registrationWindows(user),
+    myGrades(user),
+    myAttendance(user),
   ]);
   const active = upcoming.filter((s) => s.status !== "cancelled");
   const next = active[0] ?? null;
@@ -63,10 +68,21 @@ export default async function TodayPage() {
   const hour = zoned(now).hour;
   const greet = hour >= 5 && hour < 12 ? t.today.greetMorning : hour < 17 && hour >= 12 ? t.today.greetDay : hour >= 17 && hour < 23 ? t.today.greetEvening : t.today.greetNight;
   const [greetBefore, greetAfter] = greet("\u0000").split("\u0000");
-  const stats = [
+  const myGpa = gpa(grades.filter((c) => c.term === currentTerm(now)).map((c) => ({ score: courseScore(c.works), credits: c.credits })));
+  // Courses where at most one more absence is allowed (25% rule), most urgent first.
+  const absenceAlerts = attendance
+    .filter((c) => c.planned > 0)
+    .map((c) => {
+      const absent = c.marks.filter((m) => m.status === "absent").length;
+      const allowed = absenceAllowance(c.planned);
+      return { ...c, absent, allowed, risk: absenceRisk(absent, allowed) };
+    })
+    .filter((c) => c.risk !== "ok")
+    .sort((a, b) => a.allowed - a.absent - (b.allowed - b.absent));
+  const stats: { label: string; value: number; text?: string; icon: LucideIcon; href: string; note?: string }[] = [
     { label: t.today.statClasses, value: classesToday, icon: CalendarClock, href: "/schedule" },
     { label: t.today.statDeadlines, value: week.length, icon: ClipboardList, href: "/deadlines", note: overdue.length ? `${t.deadlines.overdue}: ${overdue.length}` : undefined },
-    { label: t.today.statNew, value: inbox.length + extraAnns.length, icon: Bell, href: "/notifications" },
+    { label: t.today.statGpa, value: 0, text: myGpa != null ? fmtGpa(myGpa) : "—", icon: GraduationCap, href: "/grades" },
   ];
 
   // Timeline of the next class's day (08:00 → last class).
@@ -106,7 +122,7 @@ export default async function TodayPage() {
               <x.icon size={17} />
             </span>
             <p className="mt-4 font-display text-[2rem] font-semibold leading-none tracking-tight sm:text-[2.5rem]">
-              <CountUp value={x.value} />
+              {x.text ?? <CountUp value={x.value} />}
             </p>
             <p className="mt-2 text-[12px] leading-tight text-muted sm:text-[13px]">{x.label}</p>
             {x.note && <p className="mt-1 text-[12px] font-medium text-danger">{x.note}</p>}
@@ -114,11 +130,32 @@ export default async function TodayPage() {
         ))}
       </div>
 
+      {absenceAlerts.length > 0 && (
+        <div className="fade-up mb-6 space-y-2" style={{ "--i": 1 } as React.CSSProperties}>
+          {absenceAlerts.map((c) => (
+            <Link
+              key={c.id}
+              href="/attendance"
+              className={`flex items-center gap-3 rounded-2xl border px-4 py-3 text-sm transition-colors sm:px-5 ${
+                c.risk === "over" ? "border-danger/30 bg-danger-soft text-danger" : "border-warn/30 bg-warn-soft text-warn"
+              }`}
+            >
+              <AlertTriangle size={17} className="shrink-0" />
+              <span className="min-w-0 flex-1">
+                <b className="font-semibold">{c.title}</b> ·{" "}
+                {c.risk === "over" ? t.attendance.over(c.absent - c.allowed) : c.allowed - c.absent === 1 ? t.attendance.lastOne : t.attendance.atLimit}
+              </span>
+              <span className="shrink-0 text-[13px] font-medium tabular-nums">{t.attendance.nb(c.absent, c.allowed)}</span>
+            </Link>
+          ))}
+        </div>
+      )}
+
       {/* 1. Next class — the one bold surface on the page */}
       <section className="fade-up mb-14" style={{ "--i": 2 } as React.CSSProperties}>
         {next ? (
           <div className="hero-red spotlight spotlight-light relative overflow-hidden rounded-[1.75rem] text-white">
-            <XMark className="pointer-events-none absolute -bottom-16 -right-10 h-72 w-72 text-white/[0.08]" strokeWidth={15} />
+            <XMark className="pointer-events-none absolute -bottom-10 -right-6 h-72 w-72 text-white/[0.07]" />
             <div className="relative flex flex-wrap items-end justify-between gap-6 p-6 sm:p-8">
               <div className="min-w-0">
                 <p className="flex flex-wrap items-center gap-2 text-[13px] text-white/75">
@@ -131,14 +168,21 @@ export default async function TodayPage() {
                   {formatTime(new Date(next.starts_at), locale)}–{formatTime(new Date(next.ends_at), locale)} · {t.common.room} {next.room} · {next.teacher_name}
                 </p>
               </div>
-              <div className="rounded-2xl bg-white px-5 py-3 text-[#c41233] shadow-[0_12px_24px_-12px_rgba(60,0,10,0.5)]">
-                <p className="font-display text-xl font-semibold tabular-nums tracking-tight sm:text-2xl">
-                  {live ? (
-                    <Countdown to={new Date(next.ends_at).toISOString()} wrap="endsIn" />
-                  ) : (
-                    <Countdown to={new Date(next.starts_at).toISOString()} wrap="startsIn" />
-                  )}
-                </p>
+              <div className="flex flex-col items-stretch gap-2 sm:items-end">
+                <div className="rounded-2xl bg-white px-5 py-3 text-[#c41233] shadow-[0_12px_24px_-12px_rgba(60,0,10,0.5)]">
+                  <p className="font-display text-xl font-semibold tabular-nums tracking-tight sm:text-2xl">
+                    {live ? (
+                      <Countdown to={new Date(next.ends_at).toISOString()} wrap="endsIn" />
+                    ) : (
+                      <Countdown to={new Date(next.starts_at).toISOString()} wrap="startsIn" />
+                    )}
+                  </p>
+                </div>
+                {live && (
+                  <Link href="/checkin" className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white/15 px-4 py-2.5 text-sm font-medium text-white backdrop-blur-sm transition-colors hover:bg-white/25">
+                    <ScanLine size={16} /> {t.today.checkin}
+                  </Link>
+                )}
               </div>
             </div>
             {/* Day timeline */}
@@ -268,6 +312,9 @@ export default async function TodayPage() {
             </ul>
           </Card>
         )}
+        <Link href="/announcements" className="ml-auto mt-3 flex w-fit items-center gap-1 text-[13px] text-muted hover:text-fg">
+          {t.ann.title} <ChevronRight size={14} />
+        </Link>
       </section>
 
       {/* 4. Course registration */}

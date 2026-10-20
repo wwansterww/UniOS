@@ -4,6 +4,7 @@ import { logEvent, markDone, recomputeForStudent, snooze } from "../reminders/en
 import { OFFSET_CHOICES } from "../reminders/plan";
 import { DAY, addDays, formatDateTime, formatDay, formatTime, startOfDay, startOfWeek } from "../time";
 import { appUrl, canLinkButton, esc, tg, type InlineButton } from "./api";
+import { absenceAllowance, absenceRisk, courseScore, currentTerm, fmtGpa, gpa, letter, type Category } from "../journal";
 
 interface Update {
   update_id: number;
@@ -53,6 +54,7 @@ const lang = (p?: { locale: string }): Locale => (p && isLocale(p.locale) ? p.lo
 export const menu = (t: Dict) => [
   [t.bot.kbToday, t.bot.kbNext],
   [t.bot.kbDeadlines, t.bot.kbWeek],
+  [t.bot.kbGrades, t.bot.kbAbsences],
   [t.bot.kbSettings],
 ];
 
@@ -65,6 +67,8 @@ function menuCommand(raw: string): string | null {
     if (text === t.bot.kbDeadlines) return "/deadlines";
     if (text === t.bot.kbWeek) return "/week";
     if (text === t.bot.kbSettings) return "/settings";
+    if (text === t.bot.kbGrades) return "/grades";
+    if (text === t.bot.kbAbsences) return "/nb";
   }
   return null;
 }
@@ -95,12 +99,16 @@ export async function handleUpdate(db: Db, u: Update, io: BotIO = telegramIO, no
       const [html, buttons] = await deadlines(db, p, t, now);
       return io.send(chatId, html, { buttons });
     }
+    case "/grades":
+      return io.send(chatId, await grades(db, p, t, now), { keyboard: menu(t) });
+    case "/nb":
+      return io.send(chatId, await absences(db, p, t, now), { keyboard: menu(t) });
     case "/settings": {
       const [html, buttons] = await settings(db, p, t);
       return io.send(chatId, html, { buttons });
     }
     default:
-      return io.send(chatId, t.bot.help, { keyboard: menu(t) });
+      return io.send(chatId, `${t.bot.help}\n${t.bot.helpJournal}`, { keyboard: menu(t) });
   }
 }
 
@@ -308,6 +316,66 @@ async function deadlines(db: Db, p: Profile, t: Dict, now: Date, until = new Dat
   return [text, buttons];
 }
 
+// ---------- grades & absences ----------
+
+/** This semester's courses of a student. */
+const termCourses = (db: Db, studentId: string, now: Date) =>
+  db.q<{ id: string; title: string; credits: number; group_id: string }>(
+    `select c.id, c.title, c.credits, cg.group_id from courses c
+       join course_groups cg on cg.course_id = c.id
+       join group_members gm on gm.group_id = cg.group_id and gm.student_id = $1
+      where c.term = $2 order by c.title`,
+    [studentId, currentTerm(now)],
+  );
+
+async function grades(db: Db, p: Profile, t: Dict, now: Date) {
+  const courses = await termCourses(db, p.id, now);
+  if (!courses.length) return `<b>${t.bot.gradesTitle}</b>\n${t.bot.noGrades}`;
+  const works = await db.q<{ course_id: string; max_points: number; category: Category; points: number | null }>(
+    `select a.course_id, a.max_points::float8 as max_points, a.category, g.points::float8 as points
+       from assessments a left join grades g on g.assessment_id = a.id and g.student_id = $1
+      where a.course_id::text = any(string_to_array($2, ','))`,
+    [p.id, courses.map((c) => c.id).join(",")],
+  );
+  const rows = courses.map((c) => ({ ...c, score: courseScore(works.filter((w) => w.course_id === c.id)) }));
+  const g = gpa(rows);
+  return [
+    `<b>${t.bot.gradesTitle}</b>`,
+    g != null ? `${t.grades.termGpa}: <b>${fmtGpa(g)}</b>` : "",
+    "",
+    ...rows.map((c) => `${esc(c.title)} — ${c.score != null ? `<b>${c.score}</b> · ${letter(c.score)}` : "—"}`),
+  ]
+    .filter((l, i) => l || i > 1)
+    .join("\n");
+}
+
+async function absences(db: Db, p: Profile, t: Dict, now: Date) {
+  const courses = await termCourses(db, p.id, now);
+  if (!courses.length) return `<b>${t.bot.absencesTitle}</b>\n${t.attendance.noMarks}`;
+  const stats = await db.q<{ course_id: string; absent: number; planned: number }>(
+    `select cs.course_id,
+            count(*) filter (where a.status = 'absent')::int as absent,
+            count(*) filter (where cs.status <> 'cancelled')::int as planned
+       from class_sessions cs
+       left join attendance a on a.session_id = cs.id and a.student_id = $1
+      where cs.group_id in (select group_id from group_members where student_id = $1)
+        and cs.course_id::text = any(string_to_array($2, ','))
+      group by cs.course_id`,
+    [p.id, courses.map((c) => c.id).join(",")],
+  );
+  const lines = courses.map((c) => {
+    const s = stats.find((x) => x.course_id === c.id);
+    if (!s?.planned) return `${esc(c.title)} — ${t.attendance.noMarks}`;
+    const allowed = absenceAllowance(s.planned);
+    const risk = absenceRisk(s.absent, allowed);
+    const left = allowed - s.absent;
+    const mark = risk === "over" ? "🔴" : risk === "warn" ? "🟡" : "🟢";
+    const note = risk === "over" ? t.attendance.over(-left) : `${t.attendance.canMiss}: <b>${left}</b>`;
+    return `${mark} ${esc(c.title)}\n    ${t.attendance.absentOf(s.absent, allowed)} · ${note}`;
+  });
+  return [`<b>${t.bot.absencesTitle}</b>`, "", ...lines, "", `<i>${esc(t.attendance.rule)}</i>`].join("\n");
+}
+
 /** Bot profile: menu commands + description shown in Telegram. */
 export async function configureBot() {
   const t = dictionaries.ru;
@@ -317,6 +385,8 @@ export async function configureBot() {
       { command: "next", description: "Следующая пара" },
       { command: "deadlines", description: "Ближайшие дедлайны" },
       { command: "week", description: "Расписание на неделю" },
+      { command: "grades", description: "Оценки и GPA за семестр" },
+      { command: "nb", description: "Пропуски: сколько ещё можно" },
       { command: "settings", description: "Когда напоминать о дедлайнах" },
     ],
   });

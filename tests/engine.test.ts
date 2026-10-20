@@ -147,7 +147,7 @@ describe("reminders in the database", () => {
 
 describe("row level security", () => {
   it("student sees only courses of their groups", async () => {
-    const courses = await asUser(student, (q) => q<{ code: string }>(`select code from courses order by code`));
+    const courses = await asUser(student, (q) => q<{ code: string }>(`select code from courses where term = '2026-2' order by code`));
     expect(courses.map((c) => c.code)).toEqual(["CSE 341", "CSE 352", "MGT 410", "MKT 305", "TOU 220"]);
     const fin = await db.q<{ id: string }>(`select p.id from profiles p join group_members gm on gm.student_id = p.id join groups g on g.id = gm.group_id where g.invite_code = 'FIN232' limit 1`);
     const finCourses = await asUser(fin[0].id, (q) => q<{ code: string }>(`select code from courses order by code`));
@@ -170,6 +170,40 @@ describe("row level security", () => {
     const other = await asUser(otherTeacher, (q) => q<{ id: string }>(`select id from courses`));
     expect(other.map((c) => c.id)).toContain(courseMicro);
     expect(other.map((c) => c.id)).not.toContain(courseDb);
+  });
+
+  it("student sees only their own grades and attendance; teacher only their courses", async () => {
+    const other = (await db.q<{ id: string }>(`select id from profiles where email = 's1@narxoz.kz'`))[0].id;
+    const mine = await asUser(student, (q) => q<{ student_id: string }>(`select student_id from grades`));
+    expect(mine.length).toBeGreaterThan(0);
+    expect(mine.every((g) => g.student_id === student)).toBe(true);
+    expect(await asUser(other, (q) => q(`select * from grades where student_id = $1`, [student]))).toHaveLength(0);
+    expect(await asUser(other, (q) => q(`select * from attendance where student_id = $1`, [student]))).toHaveLength(0);
+    const marks = await asUser(student, (q) => q<{ student_id: string }>(`select student_id from attendance`));
+    expect(marks.length).toBeGreaterThan(0);
+    expect(marks.every((m) => m.student_id === student)).toBe(true);
+
+    // CSE 341 belongs to the demo teacher: they see its grades, the other teacher doesn't.
+    const sql = `select count(*)::int as n from grades g join assessments a on a.id = g.assessment_id where a.course_id = $1`;
+    expect((await asUser(teacher, (q) => q<{ n: number }>(sql, [courseDb])))[0].n).toBeGreaterThan(0);
+    expect((await asUser(otherTeacher, (q) => q<{ n: number }>(sql, [courseDb])))[0].n).toBe(0);
+    await expect(asUser(teacher, (q) => q(`update grades set points = 0`))).rejects.toThrow(/permission denied/);
+  });
+
+  it("advisor sees students of their groups; certificates are visible to the student, the teacher and the advisor only", async () => {
+    const advisor = (await db.q<{ id: string }>(`select id from profiles where email = 'advisor@narxoz.kz'`))[0].id;
+    const seen = await asUser(advisor, (q) => q<{ n: number }>(`select count(distinct student_id)::int as n from grades`));
+    expect(seen[0].n).toBe(35); // both groups
+    expect((await asUser(advisor, (q) => q(`select * from attendance where student_id = $1`, [student]))).length).toBeGreaterThan(0);
+    const other = (await db.q<{ id: string }>(`select id from profiles where email = 's1@narxoz.kz'`))[0].id;
+    expect(await asUser(other, (q) => q(`select * from excuses where student_id = $1`, [student]))).toHaveLength(0);
+    expect((await asUser(student, (q) => q(`select * from excuses where student_id = $1`, [student]))).length).toBeGreaterThan(0);
+    expect((await asUser(advisor, (q) => q(`select * from excuses`))).length).toBeGreaterThan(0);
+    // The marketing teacher doesn't see certificates for the IoT teacher's classes.
+    const iot = await asUser(otherTeacher, (q) =>
+      q(`select 1 from excuses e join class_sessions cs on cs.id = e.session_id where cs.course_id = $1`, [courseDb]),
+    );
+    expect(iot).toHaveLength(0);
   });
 
   it("uni_app role cannot write", async () => {

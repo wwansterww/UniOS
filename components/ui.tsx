@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import type { ComponentProps, ReactNode } from "react";
@@ -142,4 +143,25 @@ export function SectionTitle({ children, action }: { children: ReactNode; action
 /** Small coloured dot for a course. */
 export function CourseDot({ color, className }: { color: string; className?: string }) {
   return <span className={cn("inline-block h-2 w-2 shrink-0 rounded-full", className)} style={{ background: color }} />;
+}
+
+/** Segmented switch between views of one page (links, so the view survives a reload). */
+export function Tabs({ items, className }: { items: { href: string; label: ReactNode; active: boolean }[]; className?: string }) {
+  return (
+    <div className={cn("flex gap-1 rounded-2xl bg-surface-2 p-1", className)}>
+      {items.map((i) => (
+        <Link
+          key={i.href}
+          href={i.href}
+          aria-current={i.active ? "page" : undefined}
+          className={cn(
+            "flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-sm font-semibold transition",
+            i.active ? "bg-surface text-fg shadow-sm" : "text-muted hover:text-fg",
+          )}
+        >
+          {i.label}
+        </Link>
+      ))}
+    </div>
+  );
 }

@@ -49,7 +49,7 @@ function PasswordInput(props: React.ComponentProps<"input">) {
   );
 }
 
-export function LoginForm({ expired, demo }: { expired: boolean; demo: boolean }) {
+export function LoginForm({ expired, demo, next }: { expired: boolean; demo: boolean; next?: string }) {
   const { t } = useT();
   const [mode, setMode] = useState<"in" | "up">("in");
   const [inState, inAction, inPending] = useActionState(signIn, undefined);
@@ -60,7 +60,8 @@ export function LoginForm({ expired, demo }: { expired: boolean; demo: boolean }
 
   return (
     <div className="w-full">
-      <h2 className="mb-8 text-[1.75rem] font-semibold">{mode === "in" ? t.auth.signIn : t.auth.signUp}</h2>
+      <h2 className="text-[1.75rem] font-semibold">{mode === "in" ? t.auth.signIn : t.auth.signUp}</h2>
+      <p className="mb-7 mt-1.5 text-sm text-muted">{t.auth.welcomeHint}</p>
 
       {expired && <p className="mb-4 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn">{t.auth.linkExpired}</p>}
       {state?.error && (
@@ -72,6 +73,7 @@ export function LoginForm({ expired, demo }: { expired: boolean; demo: boolean }
 
       {mode === "in" ? (
         <form action={inAction} className="space-y-4">
+          {next && <input type="hidden" name="next" value={next} />}
           <Field label={t.auth.email}>
             <Input name="email" type="email" required autoComplete="email" placeholder="name@narxoz.kz" />
           </Field>
@@ -87,6 +89,7 @@ export function LoginForm({ expired, demo }: { expired: boolean; demo: boolean }
         </form>
       ) : (
         <form action={upAction} className="space-y-4">
+          {next && <input type="hidden" name="next" value={next} />}
           <Field label={t.auth.name}>
             <Input name="name" required autoComplete="name" />
           </Field>
@@ -114,12 +117,15 @@ export function LoginForm({ expired, demo }: { expired: boolean; demo: boolean }
       {demo && (
         <div className="mt-8 border-t border-border pt-6">
           <p className="mb-3 text-[13px] text-muted">{t.auth.demo}</p>
-          <div className="grid grid-cols-2 gap-2">
-            <Button variant="outline" disabled={demoPending} onClick={() => startDemo(() => demoSignIn("student"))} aria-label={t.auth.demoStudent}>
+          <div className="grid grid-cols-3 gap-2">
+            <Button variant="outline" disabled={demoPending} onClick={() => startDemo(() => demoSignIn("student", next))} aria-label={t.auth.demoStudent}>
               {t.profile.student}
             </Button>
-            <Button variant="outline" disabled={demoPending} onClick={() => startDemo(() => demoSignIn("teacher"))} aria-label={t.auth.demoTeacher}>
+            <Button variant="outline" disabled={demoPending} onClick={() => startDemo(() => demoSignIn("teacher", next))} aria-label={t.auth.demoTeacher}>
               {t.profile.teacher}
+            </Button>
+            <Button variant="outline" disabled={demoPending} onClick={() => startDemo(() => demoSignIn("advisor", next))} aria-label={t.auth.demoAdvisor}>
+              {t.profile.advisor}
             </Button>
           </div>
         </div>

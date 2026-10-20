@@ -210,3 +210,64 @@ body::before {
   background-size: 400% 100%;
   animation: shimmer 1.4s ease infinite;
 }
+
+/* Login brand panel: slow, soft light drifting over the Narxoz red. */
+.aurora {
+  position: absolute;
+  inset: -25%;
+  pointer-events: none;
+  filter: blur(64px);
+}
+.aurora span {
+  position: absolute;
+  border-radius: 9999px;
+  animation: aurora-drift 18s ease-in-out infinite alternate;
+}
+.aurora span:nth-child(1) {
+  width: 55%;
+  height: 55%;
+  left: 8%;
+  top: 6%;
+  background: radial-gradient(circle, rgba(255, 128, 146, 0.55), transparent 65%);
+}
+.aurora span:nth-child(2) {
+  width: 62%;
+  height: 62%;
+  right: 2%;
+  bottom: 2%;
+  background: radial-gradient(circle, rgba(92, 0, 20, 0.75), transparent 65%);
+  animation-duration: 23s;
+  animation-delay: -7s;
+}
+.aurora span:nth-child(3) {
+  width: 42%;
+  height: 42%;
+  left: 42%;
+  top: 30%;
+  background: radial-gradient(circle, rgba(255, 196, 168, 0.32), transparent 65%);
+  animation-duration: 27s;
+  animation-delay: -13s;
+}
+@keyframes aurora-drift {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(9%, -7%) scale(1.15); }
+  100% { transform: translate(-7%, 9%) scale(0.94); }
+}
+/* Fine dot grid that fades out away from the X. */
+.dot-grid {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.16) 1px, transparent 1.3px);
+  background-size: 22px 22px;
+  mask-image: radial-gradient(ellipse 70% 60% at 70% 35%, #000 10%, transparent 75%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .aurora span { animation: none; }
+}
+
+/* Check-in success: the tick pops in. */
+@keyframes checkin-pop {
+  0% { transform: scale(0.4); opacity: 0; }
+  60% { transform: scale(1.12); opacity: 1; }
+  100% { transform: scale(1); }
+}
+.checkin-pop { animation: checkin-pop 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+@media (prefers-reduced-motion: reduce) { .checkin-pop { animation: none; } }

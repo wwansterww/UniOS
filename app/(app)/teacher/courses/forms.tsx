@@ -6,21 +6,31 @@ import { toast } from "sonner";
 import { Button, Field, Input, Select } from "@/components/ui";
 import { useT } from "@/components/i18n";
 import { useAction } from "@/components/use-action";
-import { attachGroup, createCourse, createGroup, detachGroup } from "../actions";
+import { attachGroup, createCourse, createGroup, detachGroup, setCourseCredits } from "../actions";
 
 const COLORS = ["#8C80EF", "#4FB3BF", "#F2994A", "#6FCF97", "#EB5757", "#E6C14C", "#5B8DEF"];
+const CREDITS = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15];
 
 export function NewCourseForm() {
   const { t } = useT();
   const [pending, run] = useAction();
   const ref = useRef<HTMLFormElement>(null);
   return (
-    <form ref={ref} action={(fd) => run(() => createCourse(fd), () => ref.current?.reset())} className="grid gap-3 sm:grid-cols-[1fr_8rem_auto_auto] sm:items-end">
+    <form ref={ref} action={(fd) => run(() => createCourse(fd), () => ref.current?.reset())} className="grid gap-3 sm:grid-cols-[1fr_8rem_6rem_auto_auto] sm:items-end">
       <Field label={t.teacher.courseTitle}>
         <Input name="title" required />
       </Field>
       <Field label={t.teacher.courseCode}>
         <Input name="code" placeholder="CSE 101" />
+      </Field>
+      <Field label={t.teacher.creditsLabel}>
+        <Select name="credits" defaultValue={5}>
+          {CREDITS.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </Select>
       </Field>
       <Field label={t.teacher.color}>
         <Select name="color" defaultValue={COLORS[0]} className="w-28">
@@ -99,5 +109,27 @@ export function DetachGroup({ courseId, groupId }: { courseId: string; groupId: 
     >
       <X size={14} />
     </button>
+  );
+}
+
+export function CreditsSelect({ courseId, value }: { courseId: string; value: number }) {
+  const { t } = useT();
+  const [pending, run] = useAction();
+  return (
+    <label className="flex items-center gap-2 text-[13px] text-muted">
+      {t.teacher.creditsLabel}
+      <Select
+        value={value}
+        disabled={pending}
+        onChange={(e) => run(() => setCourseCredits(courseId, Number(e.target.value)))}
+        className="h-9 w-20"
+      >
+        {[...new Set([...CREDITS, value])].sort((a, b) => a - b).map((n) => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+      </Select>
+    </label>
   );
 }

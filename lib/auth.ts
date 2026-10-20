@@ -9,7 +9,7 @@ import { isLocale, type Locale } from "./i18n";
 export interface User {
   id: string;
   email: string;
-  role: "student" | "teacher";
+  role: "student" | "teacher" | "advisor";
   full_name: string;
   locale: Locale;
   telegram_chat_id: string | null;
@@ -68,10 +68,16 @@ export const getUser = cache(async (): Promise<User | null> => {
   }
 });
 
+/** Start page of each role. */
+export const homeFor = (role: string) => (role === "teacher" ? "/teacher" : role === "advisor" ? "/advisor" : "/today");
+
+/** Only same-site paths are allowed as a post-login destination. */
+export const safeNext = (v: unknown) => (typeof v === "string" && v.startsWith("/") && !v.startsWith("//") && !v.includes("\\") ? v : null);
+
 export async function requireUser(role?: User["role"]): Promise<User> {
   const u = await getUser();
   if (!u) redirect("/login");
-  if (role && u.role !== role) redirect(u.role === "teacher" ? "/teacher" : "/today");
+  if (role && u.role !== role) redirect(homeFor(u.role));
   return u;
 }
 

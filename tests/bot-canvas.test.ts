@@ -43,6 +43,18 @@ describe("telegram bot", () => {
     expect(sent[1].html).toContain("устарела");
   });
 
+  it("answers /grades with GPA and /nb with absences left (also from the menu buttons)", async () => {
+    const { io, sent } = fakeIO();
+    await handleUpdate(db, { update_id: 40, message: { chat: { id: 777 }, text: "/grades" } }, io, NOW);
+    await handleUpdate(db, { update_id: 41, message: { chat: { id: 777 }, text: "Пропуски" } }, io, NOW);
+    expect(sent[0].html).toContain("Оценки за семестр");
+    expect(sent[0].html).toContain("GPA семестра");
+    expect(sent[0].html).toContain("Интернет вещей");
+    expect(sent[1].html).toContain("Пропуски (НБ)");
+    expect(sent[1].html).toMatch(/Маркетинговая стратегия\n\s+НБ \d из 7/);
+    expect(sent[1].html).toContain("25%");
+  });
+
   it("answers /deadlines, /today and /week", async () => {
     const { io, sent } = fakeIO();
     await handleUpdate(db, { update_id: 3, message: { chat: { id: 777 }, text: "/deadlines" } }, io, NOW);

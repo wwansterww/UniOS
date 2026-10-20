@@ -2,10 +2,12 @@ import bcrypt from "bcryptjs";
 import type { Db, Q } from "./core";
 import { recomputeForDeadline } from "../reminders/engine";
 import { DAY, HOUR, MIN, addDays, fromZoned, startOfWeek, zoned } from "../time";
+import { currentTerm, termParts, type Category } from "../journal";
 
 export const DEMO_PASSWORD = "demo12345";
 export const DEMO_STUDENT = "student@narxoz.kz";
 export const DEMO_TEACHER = "teacher@narxoz.kz";
+export const DEMO_ADVISOR = "advisor@narxoz.kz";
 
 const STUDENT_NAMES = [
   "Айдана Серікова", "Нурсултан Ахметов", "Дана Жумабекова", "Ерлан Касымов", "Алия Нурланова",
@@ -20,7 +22,11 @@ const STUDENT_NAMES = [
 /** Fills an empty database with a believable week at Narxoz, relative to `now`. */
 export async function seedIfEmpty(db: Db, now = new Date()) {
   const [{ n }] = await db.q<{ n: number }>(`select count(*)::int as n from profiles`);
-  if (n > 0) return false;
+  if (n > 0) {
+    // Demo databases created before the gradebook existed get demo grades and attendance once.
+    await db.tx((q) => seedJournal(q, now));
+    return false;
+  }
   await db.tx((q) => seed(q, now));
   return true;
 }
@@ -28,12 +34,14 @@ export async function seedIfEmpty(db: Db, now = new Date()) {
 export async function seed(q: Q, now = new Date()) {
   const hash = bcrypt.hashSync(DEMO_PASSWORD, 8);
   const ins = async (sql: string, params: unknown[]) => (await q<{ id: string }>(sql + " returning id", params))[0].id;
-  const profile = (email: string, name: string, role: "student" | "teacher") =>
+  const profile = (email: string, name: string, role: "student" | "teacher" | "advisor") =>
     ins(`insert into profiles (email, full_name, role, password_hash) values ($1, $2, $3, $4)`, [email, name, role, hash]);
 
   // People
   const teacher = await profile(DEMO_TEACHER, "Айгерим Сапарова", "teacher");
   const teacher2 = await profile("teacher2@narxoz.kz", "Бауыржан Омаров", "teacher");
+  const teacher3 = await profile("teacher3@narxoz.kz", "Даурен Жаксыбеков", "teacher");
+  const advisor = await profile(DEMO_ADVISOR, "Гульнара Сейтова", "advisor");
   const student = await profile(DEMO_STUDENT, "Алибек Нурланов", "student");
   const studentsIS = [student];
   const studentsFIN: string[] = [];
@@ -47,18 +55,36 @@ export async function seed(q: Q, now = new Date()) {
   const gFIN = await ins(`insert into groups (name, invite_code, created_by) values ('ФИН-23-2', 'FIN232', $1)`, [teacher2]);
   for (const s of studentsIS) await q(`insert into group_members (group_id, student_id) values ($1, $2)`, [gIS, s]);
   for (const s of studentsFIN) await q(`insert into group_members (group_id, student_id) values ($1, $2)`, [gFIN, s]);
+  for (const g of [gIS, gFIN]) await q(`insert into group_advisors (group_id, advisor_id) values ($1, $2)`, [g, advisor]);
 
   // Courses: the demo student's real Narxoz timetable (fall 2026)
-  const course = (teacherId: string, title: string, code: string, color: string) =>
-    ins(`insert into courses (teacher_id, title, code, color) values ($1, $2, $3, $4)`, [teacherId, title, code, color]);
-  const iot = await course(teacher, "Интернет вещей", "CSE 341", "#4F7CF7");
-  const games = await course(teacher, "Основы разработки игр", "CSE 352", "#8B5CF6");
-  const ent = await course(teacher, "Технологическое предпринимательство", "MGT 410", "#F2994A");
-  const mkt = await course(teacher2, "Маркетинговая стратегия", "MKT 305", "#E0699B");
-  const tour = await course(teacher2, "Minor: География международного туризма", "TOU 220", "#22A699");
+  const term = currentTerm(now);
+  const course = (teacherId: string, title: string, code: string, color: string, credits: number, courseTerm = term) =>
+    ins(`insert into courses (teacher_id, title, code, color, credits, term) values ($1, $2, $3, $4, $5, $6)`, [teacherId, title, code, color, credits, courseTerm]);
+  const iot = await course(teacher, "Интернет вещей", "CSE 341", "#4F7CF7", 6);
+  const games = await course(teacher, "Основы разработки игр", "CSE 352", "#8B5CF6", 5);
+  const ent = await course(teacher, "Технологическое предпринимательство", "MGT 410", "#F2994A", 5);
+  const mkt = await course(teacher2, "Маркетинговая стратегия", "MKT 305", "#E0699B", 5);
+  const tour = await course(teacher2, "Minor: География международного туризма", "TOU 220", "#22A699", 3);
   const link = (c: string, g: string) => q(`insert into course_groups (course_id, group_id) values ($1, $2)`, [c, g]);
   for (const c of [iot, games, ent, mkt, tour]) await link(c, gIS);
   for (const c of [ent, mkt, tour]) await link(c, gFIN);
+
+  // Two finished semesters of ИС-23-1, for the GPA history.
+  const { year, fall } = termParts(term);
+  const prev = fall ? `${year}-1` : `${year - 1}-2`;
+  const prevPrev = fall ? `${year - 1}-2` : `${year - 1}-1`;
+  const past: [string, string, string, number, string][] = [
+    ["Базы данных", "CSE 230", "#0EA5E9", 5, prev],
+    ["Веб-разработка", "CSE 240", "#14B8A6", 5, prev],
+    ["Теория вероятностей и статистика", "MAT 210", "#A855F7", 5, prev],
+    ["Английский язык (B2)", "ENG 202", "#F59E0B", 4, prev],
+    ["Алгоритмы и структуры данных", "CSE 220", "#3B82F6", 6, prevPrev],
+    ["Операционные системы", "CSE 260", "#64748B", 5, prevPrev],
+    ["Философия", "PHI 101", "#EC4899", 3, prevPrev],
+    ["Казахский язык", "KAZ 201", "#22C55E", 3, prevPrev],
+  ];
+  for (const [title, code, color, credits, t] of past) await link(await course(teacher3, title, code, color, credits, t), gIS);
 
   // Weekly timetable: [weekday 0=Mon, "HH:MM", course, room]. Narxoz pairs are 75 minutes.
   const slots: Record<string, [number, string, string, string][]> = {
@@ -74,23 +100,29 @@ export async function seed(q: Q, now = new Date()) {
       [3, "11:00", mkt, "404"], [4, "09:30", tour, "123"],
     ],
   };
+  // A whole 15-week semester around today: 7 weeks behind, this week, 7 ahead (2 classes a week → 30).
   const PAIR = 75 * MIN;
   const weekStart = startOfWeek(now);
   const ws = zoned(weekStart);
-  const sessions: { id: string; starts: Date; group: string; course: string; room: string }[] = [];
+  const planned: { course_id: string; group_id: string; starts_at: string; ends_at: string; room: string }[] = [];
   for (const [group, list] of Object.entries(slots)) {
-    for (let week = -1; week < 3; week++) {
+    for (let week = -7; week <= 7; week++) {
       for (const [wd, time, c, room] of list) {
         const [h, m] = time.split(":").map(Number);
         const starts = fromZoned(ws.year, ws.month, ws.day + week * 7 + wd, h, m);
-        const id = await ins(
-          `insert into class_sessions (course_id, group_id, starts_at, ends_at, room) values ($1, $2, $3, $4, $5)`,
-          [c, group, starts.toISOString(), new Date(starts.getTime() + PAIR).toISOString(), room],
-        );
-        sessions.push({ id, starts, group, course: c, room });
+        planned.push({ course_id: c, group_id: group, starts_at: starts.toISOString(), ends_at: new Date(starts.getTime() + PAIR).toISOString(), room });
       }
     }
   }
+  const sessions = (
+    await q<{ id: string; starts_at: Date; group_id: string; course_id: string; room: string }>(
+      `insert into class_sessions (course_id, group_id, starts_at, ends_at, room)
+       select course_id, group_id, starts_at, ends_at, room
+         from jsonb_to_recordset($1::jsonb) as x(course_id uuid, group_id uuid, starts_at timestamptz, ends_at timestamptz, room text)
+       returning id, starts_at, group_id, course_id, room`,
+      [JSON.stringify(planned)],
+    )
+  ).map((r) => ({ id: r.id, starts: new Date(r.starts_at), group: r.group_id, course: r.course_id, room: r.room }));
 
   // One moved class: the next "Основы разработки игр" → next day 14:00 (a free slot), room 523 → 525
   const toMove = sessions
@@ -187,6 +219,8 @@ export async function seed(q: Q, now = new Date()) {
     ],
   );
 
+  await seedJournal(q, now);
+
   // Notification settings for everyone (defaults) + reminders for all deadlines
   await q(`insert into notification_prefs (user_id) select id from profiles on conflict do nothing`);
   for (const id of ids) await recomputeForDeadline(q, id, { now });
@@ -199,4 +233,153 @@ export async function seed(q: Q, now = new Date()) {
       new Date(now.getTime() - (i + 1) * HOUR).toISOString(),
     ]);
   }
+}
+
+/** Deterministic pseudo-random number in [0, 1) for a key (FNV-1a hash). */
+function rnd(key: string) {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
+  return ((h >>> 0) % 10000) / 10000;
+}
+
+// Graded works per course code: [title, max points, category, graded yet?]. RK1 is over, RK2 is going on, the exam is ahead.
+const WORKS: Record<string, [string, number, Category, boolean][]> = {
+  "CSE 341": [
+    ["Лабораторная №1: Arduino", 10, "rk1", true], ["Лабораторная №2: Wi-Fi и ESP32", 10, "rk1", true], ["Квиз: протоколы IoT", 20, "rk1", true],
+    ["Midterm (РК1)", 60, "rk1", true], ["Лабораторная №3: датчики и MQTT", 10, "rk2", false], ["Экзамен", 100, "exam", false],
+  ],
+  "CSE 352": [
+    ["Практика 1: сцена и камера", 20, "rk1", true], ["Практика 2: физика и коллизии", 20, "rk1", true], ["Рубежный контроль 1", 60, "rk1", true],
+    ["Дизайн-документ игры", 30, "rk2", false], ["Экзамен", 100, "exam", false],
+  ],
+  "MGT 410": [["Эссе: идея стартапа", 20, "rk1", true], ["Анализ рынка", 30, "rk1", true], ["Рубежный контроль 1", 50, "rk1", true], ["Экзамен", 100, "exam", false]],
+  "MKT 305": [["Тест: основы маркетинга", 20, "rk1", true], ["Кейс: Starbucks в Казахстане", 30, "rk1", true], ["Рубежный контроль 1", 50, "rk1", true], ["Экзамен", 100, "exam", false]],
+  "TOU 220": [["Доклад: туризм в Центральной Азии", 25, "rk1", true], ["Рубежный контроль 1", 75, "rk1", true], ["Экзамен", 100, "exam", false]],
+};
+// Finished courses: both midterms and the exam are graded.
+const PAST_WORKS: [string, number, Category, boolean][] = [["Рубежный контроль 1", 100, "rk1", true], ["Рубежный контроль 2", 100, "rk2", true], ["Экзамен", 100, "exam", true]];
+
+// Teacher comments the demo student sees under a grade: [course code, work title, comment].
+const COMMENTS: [string, string, string][] = [
+  ["CSE 341", "Квиз: протоколы IoT", "Хорошо! Но CoAP разобран поверхностно — перечитай лекцию 5."],
+  ["MKT 305", "Кейс: Starbucks в Казахстане", "Сильный SWOT, но сегментация слабая: добавь портрет клиента."],
+];
+
+// Fixed absences ("НБ") per student and course, so the 25% limit has something to show. Everyone else: random.
+const ABSENCES: Record<string, { absent: Record<string, number>; late?: Record<string, number> }> = {
+  [DEMO_STUDENT]: { absent: { "MKT 305": 6, "CSE 341": 2, "CSE 352": 1 }, late: { "CSE 341": 1 } }, // 1 absence left in marketing
+  "s4@narxoz.kz": { absent: { "CSE 341": 8 } }, // Ерлан Касымов: over the limit
+  "s6@narxoz.kz": { absent: { "CSE 352": 6 } }, // Тимур Бекжанов: 1 absence left
+};
+
+/** Inserts rows in one statement: cols are "name type" pairs of the table. */
+async function insertMany(q: Q, table: string, cols: string[], rows: Record<string, unknown>[]) {
+  for (let i = 0; i < rows.length; i += 2000) {
+    const names = cols.map((c) => c.split(" ")[0]).join(", ");
+    await q(`insert into ${table} (${names}) select ${names} from jsonb_to_recordset($1::jsonb) as x(${cols.join(", ")})`, [
+      JSON.stringify(rows.slice(i, i + 2000)),
+    ]);
+  }
+}
+
+/**
+ * Demo gradebook and attendance: works with points for every student, and marks for every class
+ * that already ended. Runs only for the demo dataset and only while both tables are empty.
+ */
+export async function seedJournal(q: Q, now = new Date()) {
+  const [demo] = await q<{ id: string }>(`select id from profiles where email = $1`, [DEMO_STUDENT]);
+  if (!demo) return;
+  const [{ n }] = await q<{ n: number }>(`select ((select count(*) from assessments) + (select count(*) from attendance))::int as n`);
+  if (n > 0) return;
+
+  const courses = await q<{ id: string; code: string; teacher_id: string; term: string }>(`select id, code, teacher_id, term from courses`);
+  const students = await q<{ course_id: string; student_id: string }>(
+    `select distinct cg.course_id, gm.student_id from course_groups cg join group_members gm on gm.group_id = cg.group_id`,
+  );
+  // Each student has an overall level; the demo student is a solid "B+" student.
+  const level = (s: string) => (s === demo.id ? 0.86 : 0.6 + 0.38 * rnd("lvl" + s));
+  const grades: Record<string, unknown>[] = [];
+  for (const c of courses) {
+    const works = WORKS[c.code] ?? (c.term < currentTerm(now) ? PAST_WORKS : []);
+    for (const [i, [title, max, category, graded]] of works.entries()) {
+      const [a] = await q<{ id: string }>(
+        `insert into assessments (course_id, title, max_points, category, created_at) values ($1, $2, $3, $4, $5) returning id`,
+        [c.id, title, max, category, new Date(now.getTime() - (works.length - i) * 5 * DAY).toISOString()],
+      );
+      if (!graded) continue;
+      for (const s of students.filter((x) => x.course_id === c.id)) {
+        const share = Math.min(1, Math.max(0.35, level(s.student_id) + (rnd(a.id + s.student_id) - 0.5) * 0.24));
+        grades.push({ assessment_id: a.id, student_id: s.student_id, points: Math.round(share * max * 2) / 2, graded_by: c.teacher_id });
+      }
+    }
+  }
+  await insertMany(q, "grades", ["assessment_id uuid", "student_id uuid", "points numeric", "graded_by uuid"], grades);
+  for (const [code, title, comment] of COMMENTS)
+    await q(
+      `update grades g set comment = $3 from assessments a join courses c on c.id = a.course_id
+        where g.assessment_id = a.id and c.code = $1 and a.title = $2 and g.student_id = $4`,
+      [code, title, comment, demo.id],
+    );
+
+  // Attendance for classes that already ended; the class in progress is left for the teacher to mark.
+  const past = await q<{ id: string; group_id: string; course_id: string; teacher_id: string }>(
+    `select cs.id, cs.group_id, cs.course_id, c.teacher_id from class_sessions cs join courses c on c.id = cs.course_id
+      where cs.ends_at < $1 and cs.status <> 'cancelled' order by cs.starts_at`,
+    [now.toISOString()],
+  );
+  const members = await q<{ group_id: string; student_id: string; email: string }>(
+    `select gm.group_id, gm.student_id, p.email from group_members gm join profiles p on p.id = gm.student_id`,
+  );
+  const code = new Map(courses.map((c) => [c.id, c.code]));
+  // Fixed marks: spread the planned absences (and late arrivals) over the student's past classes of that course.
+  const fixed = new Map<string, string>();
+  for (const m of members) {
+    const plan = ABSENCES[m.email];
+    if (!plan) continue;
+    for (const [status, perCourse] of [["absent", plan.absent], ["late", plan.late ?? {}]] as const) {
+      for (const [courseCode, count] of Object.entries(perCourse)) {
+        const list = past.filter((cs) => cs.group_id === m.group_id && code.get(cs.course_id) === courseCode && !fixed.has(cs.id + m.student_id));
+        for (let i = 0; i < Math.min(count, list.length); i++) fixed.set(list[Math.floor(((i + 0.5) * list.length) / count)].id + m.student_id, status);
+      }
+    }
+  }
+  const marks: Record<string, unknown>[] = [];
+  for (const cs of past) {
+    for (const m of members.filter((x) => x.group_id === cs.group_id)) {
+      const r = rnd(cs.id + m.student_id);
+      const random = r < 0.05 ? "absent" : r < 0.1 ? "late" : "present";
+      const status = fixed.get(cs.id + m.student_id) ?? (m.student_id === demo.id ? "present" : random);
+      marks.push({ session_id: cs.id, student_id: m.student_id, status, marked_by: cs.teacher_id });
+    }
+  }
+  await insertMany(q, "attendance", ["session_id uuid", "student_id uuid", "status text", "marked_by uuid"], marks);
+
+  // Medical certificates (справки): one approved (the absence became excused), two waiting for the teacher.
+  const excuse = async (email: string, code: string, nth: number, reason: string, approved: boolean) => {
+    const [a] = await q<{ session_id: string; student_id: string; teacher_id: string }>(
+      `select a.session_id, a.student_id, c.teacher_id from attendance a
+         join profiles p on p.id = a.student_id join class_sessions cs on cs.id = a.session_id join courses c on c.id = cs.course_id
+        where p.email = $1 and c.code = $2 and a.status = 'absent' order by cs.starts_at offset $3 limit 1`,
+      [email, code, nth],
+    );
+    if (!a) return;
+    await q(
+      `insert into excuses (session_id, student_id, reason, status, reviewed_by, reviewed_at, created_at) values ($1, $2, $3, $4, $5, $6, $7)`,
+      [a.session_id, a.student_id, reason, approved ? "approved" : "pending", approved ? a.teacher_id : null, approved ? now.toISOString() : null, new Date(now.getTime() - (approved ? 6 : 1) * DAY).toISOString()],
+    );
+    if (approved) await q(`update attendance set status = 'excused' where session_id = $1 and student_id = $2`, [a.session_id, a.student_id]);
+  };
+  await excuse(DEMO_STUDENT, "CSE 352", 0, "ОРВИ, справка 095/у из поликлиники №5", true);
+  await excuse(DEMO_STUDENT, "CSE 341", 0, "Был на олимпиаде по программированию от университета, есть письмо от деканата", false);
+  await excuse("s4@narxoz.kz", "CSE 341", 1, "Семейные обстоятельства, справка из ЦОНа", false);
+
+  // The demo student sees a fresh grade on Today.
+  const [quiz] = await q<{ id: string; title: string }>(
+    `select a.id, a.title from assessments a join courses c on c.id = a.course_id where c.code = 'CSE 341' and a.title like 'Квиз%'`,
+  );
+  if (quiz)
+    await q(
+      `insert into notifications (user_id, kind, title, link, payload, created_at) values ($1, 'grade_new', $2, '/grades', $3::jsonb, $4)`,
+      [demo.id, quiz.title, JSON.stringify({ course: "Интернет вещей", title: quiz.title, assessmentId: quiz.id }), new Date(now.getTime() - 2 * HOUR).toISOString()],
+    );
 }

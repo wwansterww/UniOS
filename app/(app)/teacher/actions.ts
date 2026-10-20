@@ -10,6 +10,7 @@ import { courseStudents, groupStudents, notify } from "@/lib/notifications/notif
 import { logEvent, recomputeForDeadline } from "@/lib/reminders/engine";
 import { MIN, fromZoned, parseLocalInput } from "@/lib/time";
 import { dispatchNow } from "@/lib/jobs";
+import { absenceAllowance, isAttendanceStatus, isCategory } from "@/lib/journal";
 import type { Result } from "../actions";
 
 const refresh = () => revalidatePath("/", "layout");
@@ -39,14 +40,30 @@ export async function createCourse(form: FormData): Promise<Result> {
   const { user, t, d } = await teacher();
   const title = str(form, "title");
   if (!title) return { ok: false, message: t.common.error };
-  await d.q(`insert into courses (teacher_id, title, code, color) values ($1, $2, $3, $4)`, [
+  await d.q(`insert into courses (teacher_id, title, code, color, credits) values ($1, $2, $3, $4, $5)`, [
     user.id,
     title,
     str(form, "code", 30) || title.slice(0, 3).toUpperCase(),
     /^#[0-9a-f]{6}$/i.test(str(form, "color")) ? str(form, "color") : "#8C80EF",
+    credits(form.get("credits")) ?? 5,
   ]);
   refresh();
   return { ok: true, message: t.common.saved };
+}
+
+const credits = (v: unknown) => {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 && n <= 30 ? n : null;
+};
+
+/** Credits weigh the course in students' GPA. */
+export async function setCourseCredits(courseId: string, value: number): Promise<Result> {
+  const { user, t, d } = await teacher();
+  const n = credits(value);
+  if (n == null) return { ok: false, message: t.common.error };
+  const r = await d.q(`update courses set credits = $3 where id = $1 and teacher_id = $2 returning id`, [courseId, user.id, n]);
+  refresh();
+  return r.length ? { ok: true, message: t.common.saved } : { ok: false, message: t.teacher.notOwner };
 }
 
 export async function createGroup(form: FormData): Promise<Result> {
@@ -404,4 +421,255 @@ export async function remindUnread(id: string): Promise<Result> {
   after(() => dispatchNow(d));
   refresh();
   return res;
+}
+
+// ---------- gradebook ----------
+
+/** The work, if it belongs to one of this teacher's courses. */
+async function ownedAssessment(q: Q, user: User, id: string) {
+  const [a] = await q<{ id: string; course_id: string; title: string; max_points: number; course_title: string }>(
+    `select a.id, a.course_id, a.title, a.max_points::float8 as max_points, c.title as course_title
+       from assessments a join courses c on c.id = a.course_id where a.id = $1 and c.teacher_id = $2`,
+    [id, user.id],
+  );
+  return a ?? null;
+}
+
+const maxPoints = (f: FormData) => {
+  const n = Number(str(f, "max", 10).replace(",", "."));
+  return Number.isFinite(n) && n > 0 && n <= 1000 ? Math.round(n * 100) / 100 : null;
+};
+
+export async function createAssessment(form: FormData): Promise<Result> {
+  const { user, t, d } = await teacher();
+  const courseId = str(form, "course_id", 40);
+  const title = str(form, "title", 120);
+  const max = maxPoints(form);
+  const category = isCategory(form.get("category")) ? String(form.get("category")) : "rk1";
+  if (!title || !max) return { ok: false, message: t.common.error };
+  return d.tx(async (q) => {
+    if (!(await ownsCourse(q, user, courseId))) return { ok: false, message: t.teacher.notOwner };
+    await q(`insert into assessments (course_id, title, max_points, category) values ($1, $2, $3, $4)`, [courseId, title, max, category]);
+    refresh();
+    return { ok: true, message: t.grades.workAdded };
+  });
+}
+
+export async function updateAssessment(form: FormData): Promise<Result> {
+  const { user, t, d } = await teacher();
+  const title = str(form, "title", 120);
+  const max = maxPoints(form);
+  if (!title || !max) return { ok: false, message: t.common.error };
+  return d.tx(async (q) => {
+    const a = await ownedAssessment(q, user, str(form, "id", 40));
+    if (!a) return { ok: false, message: t.teacher.notOwner };
+    const [over] = await q(`select 1 from grades where assessment_id = $1 and points > $2 limit 1`, [a.id, max]);
+    if (over) return { ok: false, message: t.grades.maxBelow };
+    const category = isCategory(form.get("category")) ? String(form.get("category")) : "rk1";
+    await q(`update assessments set title = $2, max_points = $3, category = $4 where id = $1`, [a.id, title, max, category]);
+    refresh();
+    return { ok: true, message: t.common.saved };
+  });
+}
+
+export async function deleteAssessment(id: string): Promise<Result> {
+  const { user, t, d } = await teacher();
+  const r = await d.q(`delete from assessments a using courses c where a.id = $1 and c.id = a.course_id and c.teacher_id = $2 returning a.id`, [id, user.id]);
+  refresh();
+  return r.length ? { ok: true } : { ok: false, message: t.teacher.notOwner };
+}
+
+/** Sets (or clears, with null) a student's points for a work. The first grade lands in the student's notifications. */
+export async function setGrade(assessmentId: string, studentId: string, points: number | null): Promise<Result> {
+  const { user, t, d } = await teacher();
+  const res = await d.tx(async (q) => {
+    const a = await ownedAssessment(q, user, assessmentId);
+    if (!a) return { ok: false, message: t.teacher.notOwner };
+    const [member] = await q(
+      `select 1 from course_groups cg join group_members gm on gm.group_id = cg.group_id where cg.course_id = $1 and gm.student_id = $2 limit 1`,
+      [a.course_id, studentId],
+    );
+    if (!member) return { ok: false, message: t.teacher.notOwner };
+    if (points == null) {
+      await q(`delete from grades where assessment_id = $1 and student_id = $2`, [a.id, studentId]);
+      return { ok: true };
+    }
+    if (!Number.isFinite(points) || points < 0 || points > a.max_points) return { ok: false, message: t.grades.outOfRange(a.max_points) };
+    const [row] = await q<{ inserted: boolean }>(
+      `insert into grades (assessment_id, student_id, points, graded_by) values ($1, $2, $3, $4)
+       on conflict (assessment_id, student_id) do update set points = excluded.points, graded_by = excluded.graded_by, updated_at = now()
+       returning (xmax = 0) as inserted`,
+      [a.id, studentId, Math.round(points * 100) / 100, user.id],
+    );
+    if (row.inserted) {
+      const [seen] = await q(`select 1 from notifications where user_id = $1 and kind = 'grade_new' and payload->>'assessmentId' = $2 limit 1`, [studentId, a.id]);
+      if (!seen) await notify(q, [studentId], "grade_new", { course: a.course_title, title: a.title, assessmentId: a.id }, { link: "/grades" });
+    }
+    return { ok: true };
+  });
+  after(() => dispatchNow(d));
+  refresh();
+  return res;
+}
+
+// ---------- attendance ----------
+
+/** Marks can be set once a class is about to start, never for a cancelled one. */
+const markable = (s: { status: string; starts_at: Date }) => s.status !== "cancelled" && new Date(s.starts_at).getTime() - 30 * MIN <= Date.now();
+
+export async function setAttendance(sessionId: string, studentId: string, status: "present" | "late" | "absent" | null): Promise<Result> {
+  const { user, t, d } = await teacher();
+  if (status != null && !isAttendanceStatus(status)) return { ok: false, message: t.common.error };
+  const res = await d.tx(async (q) => {
+    const s = await ownedSession(q, user, sessionId);
+    if (!s) return { ok: false, message: t.teacher.notOwner };
+    if (!markable(s)) return { ok: false, message: s.status === "cancelled" ? t.attendance.cancelled : t.attendance.notStarted };
+    const [member] = await q(`select 1 from group_members where group_id = $1 and student_id = $2`, [s.group_id, studentId]);
+    if (!member) return { ok: false, message: t.teacher.notOwner };
+    if (status == null) await q(`delete from attendance where session_id = $1 and student_id = $2`, [s.id, studentId]);
+    else
+      await q(
+        `insert into attendance (session_id, student_id, status, marked_by) values ($1, $2, $3, $4)
+         on conflict (session_id, student_id) do update set status = excluded.status, marked_by = excluded.marked_by, marked_at = now()`,
+        [s.id, studentId, status, user.id],
+      );
+    // "НБ" goes straight to the student (Telegram too), once per class, with how many absences are left.
+    if (status === "absent") {
+      const [seen] = await q(`select 1 from notifications where user_id = $1 and kind = 'absence_marked' and payload->>'sessionId' = $2 limit 1`, [studentId, s.id]);
+      if (!seen) {
+        const [c] = await q<{ absent: number; planned: number }>(
+          `select (select count(*)::int from attendance a join class_sessions x on x.id = a.session_id
+                    where a.student_id = $1 and a.status = 'absent' and x.course_id = $2 and x.group_id = $3) as absent,
+                  (select count(*)::int from class_sessions where course_id = $2 and group_id = $3 and status <> 'cancelled') as planned`,
+          [studentId, s.course_id, s.group_id],
+        );
+        await notify(q, [studentId], "absence_marked", {
+          course: s.course_title,
+          old: new Date(s.starts_at).toISOString(),
+          absent: c.absent,
+          allowed: absenceAllowance(c.planned),
+          sessionId: s.id,
+        }, { link: "/attendance" });
+      }
+    }
+    return { ok: true };
+  });
+  after(() => dispatchNow(d));
+  refresh();
+  return res;
+}
+
+/** Stops QR check-in for a class (it also stops by itself a minute after the QR screen is closed). */
+export async function closeCheckin(sessionId: string): Promise<Result> {
+  const { user, d } = await teacher();
+  await d.q(`update class_sessions cs set checkin_until = null from courses c where cs.id = $1 and c.id = cs.course_id and c.teacher_id = $2`, [sessionId, user.id]);
+  refresh();
+  return { ok: true };
+}
+
+/** Accepting a certificate makes the absence excused (it no longer counts toward the 25% limit). */
+export async function reviewExcuse(sessionId: string, studentId: string, approve: boolean): Promise<Result> {
+  const { user, t, d } = await teacher();
+  const res = await d.tx(async (q) => {
+    const s = await ownedSession(q, user, sessionId);
+    if (!s) return { ok: false, message: t.teacher.notOwner };
+    const [e] = await q(
+      `update excuses set status = $3, reviewed_by = $4, reviewed_at = now() where session_id = $1 and student_id = $2 returning 1`,
+      [sessionId, studentId, approve ? "approved" : "rejected", user.id],
+    );
+    if (!e) return { ok: false, message: t.common.error };
+    await q(
+      `update attendance set status = $3 where session_id = $1 and student_id = $2 and status = $4`,
+      approve ? [sessionId, studentId, "excused", "absent"] : [sessionId, studentId, "absent", "excused"],
+    );
+    await notify(q, [studentId], "excuse_reviewed", { course: s.course_title, old: new Date(s.starts_at).toISOString(), approved: approve }, { link: "/attendance" });
+    return { ok: true, message: approve ? t.attendance.approvedToast : t.attendance.rejectedToast };
+  });
+  after(() => dispatchNow(d));
+  refresh();
+  return res;
+}
+
+/** "Предупредить": tells a student how close they are to the 25% absence limit (always delivered). */
+export async function warnStudent(studentId: string, courseId: string, groupId: string): Promise<Result> {
+  const { user, t, d } = await teacher();
+  const res = await d.tx(async (q) => {
+    const [c] = await q<{ title: string; absent: number; planned: number }>(
+      `select c.title,
+              (select count(*)::int from attendance a join class_sessions x on x.id = a.session_id
+                where a.student_id = $3 and a.status = 'absent' and x.course_id = c.id and x.group_id = $2) as absent,
+              (select count(*)::int from class_sessions where course_id = c.id and group_id = $2 and status <> 'cancelled') as planned
+         from courses c join course_groups cg on cg.course_id = c.id and cg.group_id = $2
+         join group_members gm on gm.group_id = $2 and gm.student_id = $3
+        where c.id = $1 and c.teacher_id = $4`,
+      [courseId, groupId, studentId, user.id],
+    );
+    if (!c) return { ok: false, message: t.teacher.notOwner };
+    await notify(q, [studentId], "absence_warning", { course: c.title, absent: c.absent, allowed: absenceAllowance(c.planned), teacher: user.full_name }, {
+      link: "/attendance",
+      force: true,
+    });
+    await logEvent(q, user.id, "absence_warning_sent", { student_id: studentId, course_id: courseId });
+    return { ok: true, message: t.attendance.warned };
+  });
+  after(() => dispatchNow(d));
+  refresh();
+  return res;
+}
+
+/** «Все на месте»: everyone not marked yet becomes present; existing marks stay. */
+export async function markRestPresent(sessionId: string): Promise<Result> {
+  const { user, t, d } = await teacher();
+  return d.tx(async (q) => {
+    const s = await ownedSession(q, user, sessionId);
+    if (!s) return { ok: false, message: t.teacher.notOwner };
+    if (!markable(s)) return { ok: false, message: s.status === "cancelled" ? t.attendance.cancelled : t.attendance.notStarted };
+    const rows = await q(
+      `insert into attendance (session_id, student_id, status, marked_by)
+       select $1, gm.student_id, 'present', $3 from group_members gm where gm.group_id = $2
+       on conflict (session_id, student_id) do nothing
+       returning student_id`,
+      [s.id, s.group_id, user.id],
+    );
+    refresh();
+    return { ok: true, message: t.attendance.markedPresent(rows.length) };
+  });
+}
+
+/** Teacher's comment under a grade (only for graded works). */
+export async function setGradeComment(assessmentId: string, studentId: string, comment: string): Promise<Result> {
+  const { user, t, d } = await teacher();
+  const r = await d.q(
+    `update grades g set comment = $3 from assessments a join courses c on c.id = a.course_id
+      where g.assessment_id = $1 and g.student_id = $2 and a.id = g.assessment_id and c.teacher_id = $4 returning 1`,
+    [assessmentId, studentId, comment.trim().slice(0, 500), user.id],
+  );
+  refresh();
+  return r.length ? { ok: true, message: t.common.saved } : { ok: false, message: t.teacher.notOwner };
+}
+
+/** Bulk grades from Excel / Canvas: rows were matched to students and works in the browser; everything is re-checked here. */
+export async function importGrades(courseId: string, groupId: string, rows: { studentId: string; workId: string; points: number }[]): Promise<Result> {
+  const { user, t, d } = await teacher();
+  if (!Array.isArray(rows) || rows.length > 5000) return { ok: false, message: t.common.error };
+  const n = await d.tx(async (q) => {
+    if (!(await ownsCourse(q, user, courseId))) return -1;
+    const works = new Map(
+      (await q<{ id: string; max_points: number }>(`select id, max_points::float8 as max_points from assessments where course_id = $1`, [courseId])).map((w) => [w.id, w.max_points]),
+    );
+    const students = new Set((await q<{ student_id: string }>(`select student_id from group_members where group_id = $1`, [groupId])).map((r) => r.student_id));
+    const ok = rows.filter((r) => works.has(r.workId) && students.has(r.studentId) && Number.isFinite(r.points) && r.points >= 0 && r.points <= works.get(r.workId)!);
+    if (ok.length)
+      await q(
+        `insert into grades (assessment_id, student_id, points, graded_by)
+         select assessment_id, student_id, points, $2 from jsonb_to_recordset($1::jsonb) as x(assessment_id uuid, student_id uuid, points numeric)
+         on conflict (assessment_id, student_id) do update set points = excluded.points, graded_by = excluded.graded_by, updated_at = now()`,
+        [JSON.stringify(ok.map((r) => ({ assessment_id: r.workId, student_id: r.studentId, points: Math.round(r.points * 100) / 100 }))), user.id],
+      );
+    await logEvent(q, user.id, "grades_imported", { course_id: courseId, count: ok.length });
+    return ok.length;
+  });
+  refresh();
+  if (n < 0) return { ok: false, message: t.teacher.notOwner };
+  return n ? { ok: true, message: t.grades.importDone(n) } : { ok: false, message: t.grades.importNothing };
 }
