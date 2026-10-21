@@ -2,7 +2,12 @@ export type InlineButton = { text: string; callback_data?: string; url?: string 
 
 export const botToken = () => process.env.TELEGRAM_BOT_TOKEN || "";
 export const botUsername = () => (process.env.TELEGRAM_BOT_USERNAME || "").replace(/^@/, "");
-export const appUrl = () => (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
+/** Public address of the site: APP_URL, else the production domain Vercel gives the project, else local. */
+export const appUrl = () =>
+  (
+    process.env.APP_URL ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://localhost:3000")
+  ).replace(/\/$/, "");
 
 /** Telegram refuses inline URL buttons pointing at localhost. */
 export const canLinkButton = () => !/\/\/(localhost|127\.0\.0\.1|\[::1\])/.test(appUrl());

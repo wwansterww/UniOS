@@ -4,6 +4,7 @@ import { Toaster } from "sonner";
 import { I18nProvider } from "@/components/i18n";
 import { ServiceWorker } from "@/components/service-worker";
 import { currentLocale } from "@/lib/auth";
+import { appUrl } from "@/lib/telegram/api";
 import "./globals.css";
 
 const inter = Inter({ variable: "--font-inter", subsets: ["latin", "cyrillic", "cyrillic-ext"] });
@@ -12,7 +13,7 @@ const display = Inter_Tight({ variable: "--font-inter-tight", subsets: ["latin",
 
 export const metadata: Metadata = {
   // Absolute links for link previews (the logo image) point at the deployed site.
-  metadataBase: new URL(process.env.APP_URL || "http://localhost:3000"),
+  metadataBase: new URL(appUrl()),
   title: { default: "UniOS", template: "%s · UniOS" },
   description: "Расписание, дедлайны и объявления Нархоза — в одном месте",
   appleWebApp: { capable: true, title: "UniOS", statusBarStyle: "black-translucent" },

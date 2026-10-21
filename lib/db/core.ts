@@ -47,7 +47,28 @@ async function pgliteDb(dir: string | null): Promise<Db> {
 async function postgresDb(url: string): Promise<Db> {
   const { default: postgres } = await import("postgres");
   // prepare: false keeps it compatible with the Supabase transaction pooler (port 6543).
-  const sql = postgres(url, { prepare: false, max: 5, onnotice: () => {} });
+  // Encrypted unless the database runs on this machine: the password and data cross the internet to Supabase.
+  const local = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
+  const sql = postgres(url, {
+    prepare: false,
+    max: 5,
+    ssl: local ? false : "require",
+    // Don't keep sockets around: a serverless instance sleeps between requests (or the network changes), and a
+    // query on a silently dead connection would hang. Fresh connections are cheap through the pooler.
+    idle_timeout: 20,
+    connect_timeout: 10,
+    onnotice: () => {},
+    // Queries pass json/jsonb parameters as JSON text (JSON.stringify, as PGlite takes them). postgres.js would
+    // encode them once more into a JSON string, so text goes through as is; only objects get stringified.
+    types: {
+      json: {
+        to: 114,
+        from: [114, 3802],
+        serialize: (x: unknown) => (typeof x === "string" ? x : JSON.stringify(x)),
+        parse: (x: string) => JSON.parse(x),
+      },
+    },
+  });
   const wrap =
     (s: Sql | TransactionSql): Q =>
     async (text, params = []) =>

@@ -95,8 +95,9 @@ RLS (студент видит только свои группы, препод�
 
 ### 1. Supabase
 
-1. Создайте проект на https://supabase.com, регион **Frankfurt (eu-central-1)**: функции Vercel работают там же (`vercel.json` → `fra1`).
-2. Кнопка **Connect → Transaction pooler** (порт 6543). Скопируйте строку — это `DATABASE_URL` — и вставьте в файл `.env.supabase`
+1. Создайте проект на https://supabase.com. Регион функций Vercel в `vercel.json` должен совпадать с регионом базы
+   (сейчас `bom1` — Мумбаи, база в `ap-south-1`; для Frankfurt `eu-central-1` → `fra1`): каждый запрос к странице — несколько запросов к базе.
+2. Кнопка **Connect → Direct → Transaction pooler** (Shared pooler, порт 6543). Скопируйте строку — это `DATABASE_URL` — и вставьте в файл `.env.supabase`
    (он не попадает в git; локальный сервер его не читает и остаётся на своей базе).
 3. Примените схему, RLS и заполните базу аккаунтами — с вашего компьютера (пароли возьмутся из вашего `accounts.local.json`):
 
