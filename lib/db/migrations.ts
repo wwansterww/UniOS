@@ -452,4 +452,70 @@ create policy attendance_read on attendance for select to uni_app using (
   student_id = app_uid() or session_id in (select my_teaching_session_ids()) or student_id in (select my_advised_student_ids()));
 `,
   },
+  {
+    name: "006_security",
+    sql: /* sql */ `
+-- Sessions carry the profile's version: changing or resetting the password (or "sign out everywhere")
+-- bumps it and every older session stops working. Blocked accounts can't sign in.
+alter table profiles add column session_version int not null default 0;
+alter table profiles add column must_change_password boolean not null default false;
+alter table profiles add column disabled_at timestamptz;
+
+-- Every sign-in attempt, for lockouts after repeated wrong passwords and "last sign-in" in the profile.
+create table login_attempts (
+  id bigint generated always as identity primary key,
+  email text not null,
+  ip text not null default '',
+  user_agent text not null default '',
+  ok boolean not null,
+  created_at timestamptz not null default now()
+);
+create index login_attempts_email on login_attempts (email, created_at desc);
+create index login_attempts_ip on login_attempts (ip, created_at desc);
+-- Server-only: no grant to uni_app.
+alter table login_attempts enable row level security;
+`,
+  },
+  {
+    name: "007_submissions",
+    sql: /* sql */ `
+-- Work handed in as files. A teacher turns it on per deadline and picks the formats (lib/submissions.ts):
+-- file_types null = no files, students tick the deadline off. After the due time uploads close,
+-- unless allow_late: then late files are accepted and the teacher sees how late they came.
+alter table deadlines add column file_types text[];
+alter table deadlines add column allow_late boolean not null default false;
+
+create table submission_files (
+  id uuid primary key default gen_random_uuid(),
+  deadline_id uuid not null references deadlines(id) on delete cascade,
+  student_id uuid not null references profiles(id) on delete cascade,
+  name text not null,
+  size int not null,
+  data bytea not null,
+  uploaded_at timestamptz not null default now()
+);
+create index submission_files_deadline on submission_files (deadline_id, student_id);
+
+alter table submission_files enable row level security;
+grant select on submission_files to uni_app;
+create policy submission_files_read on submission_files for select to uni_app using (
+  student_id = app_uid() or deadline_id in (select my_teaching_deadline_ids()));
+`,
+  },
+  {
+    name: "008_supabase_api",
+    sql: /* sql */ `
+-- Supabase also serves the public schema over its Data API (roles anon and authenticated). UniOS never uses it:
+-- every read and write goes through the app's server. Take those roles' access away, also for tables added later.
+-- Locally there are no such roles, so this does nothing.
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') and exists (select 1 from pg_roles where rolname = 'authenticated') then
+    revoke all on all tables in schema public from anon, authenticated;
+    revoke all on all sequences in schema public from anon, authenticated;
+    alter default privileges in schema public revoke all on tables from anon, authenticated;
+    alter default privileges in schema public revoke all on sequences from anon, authenticated;
+  end if;
+end $$;
+`,
+  },
 ];

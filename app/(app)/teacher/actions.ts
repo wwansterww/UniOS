@@ -11,6 +11,7 @@ import { logEvent, recomputeForDeadline } from "@/lib/reminders/engine";
 import { MIN, fromZoned, parseLocalInput } from "@/lib/time";
 import { dispatchNow } from "@/lib/jobs";
 import { absenceAllowance, isAttendanceStatus, isCategory } from "@/lib/journal";
+import { isFileFormat } from "@/lib/submissions";
 import type { Result } from "../actions";
 
 const refresh = () => revalidatePath("/", "layout");
@@ -112,12 +113,42 @@ export async function detachGroup(courseId: string, groupId: string): Promise<Re
 
 // ---------- deadlines ----------
 
+type FileRules = { types: string[] | null; allowLate: boolean };
+
+/** "Сдача файлами" of a deadline form (components FileRulesFields): no formats = no files. A string is the error. */
+function fileRules(form: FormData, t: (typeof dictionaries)["ru"]): FileRules | string {
+  if (form.get("files") !== "on") return { types: null, allowLate: false };
+  const types = [...new Set(form.getAll("file_types").map(String).filter(isFileFormat))];
+  if (!types.length) return t.submit.pickFormat;
+  return { types, allowLate: form.get("allow_late") === "on" };
+}
+
+/** Turning files on: earlier ticks without a file no longer count as done, so their reminders come back. */
+async function saveFileRules(q: Q, id: string, rules: FileRules) {
+  const [old] = await q<{ file_types: string[] | null }>(`select file_types from deadlines where id = $1`, [id]);
+  await q(`update deadlines set file_types = string_to_array($2::text, ','), allow_late = $3, updated_at = now() where id = $1`, [
+    id,
+    rules.types?.join(",") ?? null,
+    rules.allowLate,
+  ]);
+  if (!rules.types || old?.file_types) return;
+  const cleared = await q<{ student_id: string }>(
+    `delete from deadline_status ds where ds.deadline_id = $1
+       and not exists (select 1 from submission_files sf where sf.deadline_id = ds.deadline_id and sf.student_id = ds.student_id)
+     returning ds.student_id`,
+    [id],
+  );
+  if (cleared.length) await recomputeForDeadline(q, id, { studentIds: cleared.map((r) => r.student_id) });
+}
+
 export async function createDeadline(form: FormData): Promise<Result> {
   const { user, t, d } = await teacher();
   const title = str(form, "title");
   const courseId = str(form, "course_id", 40);
   const due = parseLocalInput(str(form, "due", 20));
   const wanted = form.getAll("group_ids").map(String);
+  const rules = fileRules(form, t);
+  if (typeof rules === "string") return { ok: false, message: rules };
   if (!title || !due) return { ok: false, message: t.common.error };
   const res = await d.tx(async (q) => {
     if (!(await ownsCourse(q, user, courseId))) return { ok: false, message: t.teacher.notOwner };
@@ -125,8 +156,9 @@ export async function createDeadline(form: FormData): Promise<Result> {
     const groups = wanted.filter((g) => allowed.includes(g));
     if (groups.length === 0) return { ok: false, message: t.teacher.pickGroups };
     const [row] = await q<{ id: string }>(
-      `insert into deadlines (course_id, title, due_at, description, link, created_by) values ($1, $2, $3, $4, $5, $6) returning id`,
-      [courseId, title, due.toISOString(), str(form, "description", 4000), str(form, "link", 500) || null, user.id],
+      `insert into deadlines (course_id, title, due_at, description, link, created_by, file_types, allow_late)
+       values ($1, $2, $3, $4, $5, $6, string_to_array($7::text, ','), $8) returning id`,
+      [courseId, title, due.toISOString(), str(form, "description", 4000), str(form, "link", 500) || null, user.id, rules.types?.join(",") ?? null, rules.allowLate],
     );
     for (const g of groups) await q(`insert into deadline_groups (deadline_id, group_id) values ($1, $2)`, [row.id, g]);
     await recomputeForDeadline(q, row.id);
@@ -145,6 +177,8 @@ export async function updateDeadline(form: FormData): Promise<Result> {
   const id = str(form, "id", 40);
   const title = str(form, "title");
   const due = parseLocalInput(str(form, "due", 20));
+  const rules = fileRules(form, t);
+  if (typeof rules === "string") return { ok: false, message: rules };
   if (!title || !due) return { ok: false, message: t.common.error };
   const res = await d.tx(async (q) => {
     const [old] = await q<{ course_id: string; due_at: Date; course_title: string }>(
@@ -158,6 +192,7 @@ export async function updateDeadline(form: FormData): Promise<Result> {
       `update deadlines set title = $2, due_at = $3, description = $4, link = $5, updated_at = now() where id = $1`,
       [id, title, due.toISOString(), str(form, "description", 4000), str(form, "link", 500) || null],
     );
+    await saveFileRules(q, id, rules);
     if (moved) {
       // New due date: forget the old schedule (including sent reminders) and plan again.
       await recomputeForDeadline(q, id, { reset: true });
@@ -171,6 +206,26 @@ export async function updateDeadline(form: FormData): Promise<Result> {
     return { ok: true, message: moved ? t.teacher.moved : t.common.saved };
   });
   after(() => dispatchNow(d));
+  refresh();
+  return res;
+}
+
+/** Formats and late uploads, changeable at any time — also after the due time (e.g. to let late work in). */
+export async function setFileRules(form: FormData): Promise<Result> {
+  const { user, t, d } = await teacher();
+  const id = str(form, "id", 40);
+  const rules = fileRules(form, t);
+  if (typeof rules === "string") return { ok: false, message: rules };
+  const res = await d.tx(async (q): Promise<Result> => {
+    const [own] = await q(`select 1 from deadlines d join courses c on c.id = d.course_id where d.id = $1 and c.teacher_id = $2 and d.deleted_at is null`, [
+      id,
+      user.id,
+    ]);
+    if (!own) return { ok: false, message: t.teacher.notOwner };
+    await saveFileRules(q, id, rules);
+    await logEvent(q, user.id, "file_rules_changed", { deadline_id: id, files: !!rules.types, late: rules.allowLate });
+    return { ok: true, message: t.submit.rulesSaved };
+  });
   refresh();
   return res;
 }

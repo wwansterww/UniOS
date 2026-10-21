@@ -1,13 +1,15 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { CalendarClock, Pencil, Send, Trash2, X, Zap } from "lucide-react";
-import { Button, CourseDot, Field, Input, Select, Textarea, cn } from "@/components/ui";
+import Link from "next/link";
+import { CalendarClock, Paperclip, Pencil, Send, Trash2, X, Zap } from "lucide-react";
+import { Button, CourseDot, Field, Input, Select, Textarea, buttonClass, cn } from "@/components/ui";
 import { DueBadge, useNow } from "@/components/bits";
 import { useT } from "@/components/i18n";
 import { useAction } from "@/components/use-action";
 import { addDays, formatDateTime, fromZoned, toLocalInput, zoned } from "@/lib/time";
 import { createDeadline, deleteDeadline, updateDeadline } from "../actions";
+import { FileRulesFields } from "./file-rules";
 
 type Course = { id: string; title: string; color: string; groups: { id: string; name: string; members: number }[] };
 
@@ -26,6 +28,8 @@ export function NewDeadlineForm({ courses }: { courses: Course[] }) {
   const [groups, setGroups] = useState<string[]>(course?.groups.map((g) => g.id) ?? []);
   const [due, setDue] = useState(quick("tomorrow"));
   const [more, setMore] = useState(false);
+  // Remounts the file settings after publishing (form.reset() doesn't touch React state).
+  const [round, setRound] = useState(0);
 
   if (courses.length === 0) return <p className="text-sm text-muted">{t.teacher.noCourses}</p>;
 
@@ -39,6 +43,7 @@ export function NewDeadlineForm({ courses }: { courses: Course[] }) {
             form.current?.reset();
             setDue(quick("tomorrow"));
             setMore(false);
+            setRound((r) => r + 1);
           },
         )
       }
@@ -126,6 +131,7 @@ export function NewDeadlineForm({ courses }: { courses: Course[] }) {
           + {t.common.description} / {t.common.link}
         </button>
       )}
+      <FileRulesFields key={round} types={null} allowLate={false} />
       <Button type="submit" size="lg" variant="accent" disabled={pending || groups.length === 0} className="w-full sm:w-auto">
         <Send size={16} /> {t.teacher.publish}
       </Button>
@@ -144,13 +150,19 @@ type Row = {
   group_names: string;
   total: number;
   done: number;
+  file_types: string[] | null;
+  allow_late: boolean;
+  submitted: number;
+  late: number;
 };
 
 export function TeacherDeadlineRow({ d }: { d: Row }) {
   const { t, locale } = useT();
   const [pending, run] = useAction();
   const [edit, setEdit] = useState(false);
-  const pct = d.total ? Math.round((d.done / d.total) * 100) : 0;
+  // Work handed in as files counts uploads, not ticks.
+  const handed = d.file_types ? d.submitted : d.done;
+  const pct = d.total ? Math.round((handed / d.total) * 100) : 0;
   const now = useNow();
   const past = new Date(d.due_at) < now;
 
@@ -170,10 +182,14 @@ export function TeacherDeadlineRow({ d }: { d: Row }) {
         <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface-2" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
           <div className="h-full rounded-full bg-lavender" style={{ width: `${pct}%` }} />
         </div>
-        <span className="text-xs font-semibold text-muted">{t.teacher.doneOf(d.done, d.total)}</span>
+        <span className="text-xs font-semibold text-muted">{d.file_types ? t.submit.submittedOf(d.submitted, d.total) : t.teacher.doneOf(d.done, d.total)}</span>
       </div>
+      {d.file_types && d.late > 0 && <p className="mt-1.5 text-xs font-semibold text-warn">{t.submit.lateCount(d.late)}</p>}
       {!edit ? (
-        <div className="mt-3 flex gap-2">
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Link href={`/teacher/deadlines/${d.id}`} className={buttonClass(d.file_types ? "soft" : "ghost", "sm")}>
+            <Paperclip size={14} /> {d.file_types ? t.submit.works : t.submit.rules}
+          </Link>
           {!past && (
             <Button variant="outline" size="sm" onClick={() => setEdit(true)}>
               <Pencil size={14} /> {t.common.edit} / {t.teacher.move}
@@ -203,6 +219,7 @@ export function TeacherDeadlineRow({ d }: { d: Row }) {
           <Field label={t.common.link}>
             <Input name="link" type="url" defaultValue={d.link ?? ""} />
           </Field>
+          <FileRulesFields types={d.file_types} allowLate={d.allow_late} />
           <div className="flex gap-2">
             <Button type="submit" disabled={pending}>
               <CalendarClock size={14} /> {t.common.save}

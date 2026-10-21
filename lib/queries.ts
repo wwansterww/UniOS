@@ -83,13 +83,16 @@ export interface DeadlineRow {
   owner_id: string | null;
   done_at: Date | null;
   updated_at: Date;
+  /** Formats a file must have (lib/submissions.ts); null when the deadline takes no files. */
+  file_types: string[] | null;
+  allow_late: boolean;
 }
 
 export function studentDeadlines(user: User, opts: { from?: Date; to?: Date } = {}) {
   return withUser(user.id, (q) =>
     q<DeadlineRow>(
       `select d.id, d.title, d.due_at, d.description, d.link, d.source, d.course_id, c.title as course_title, c.color,
-              d.owner_id, ds.done_at, d.updated_at
+              d.owner_id, ds.done_at, d.updated_at, d.file_types, d.allow_late
          from deadlines d
          left join courses c on c.id = d.course_id
          left join deadline_status ds on ds.deadline_id = d.id and ds.student_id = app_uid()
@@ -105,7 +108,7 @@ export function deadlineById(user: User, id: string) {
   return withUser(user.id, async (q) => {
     const [d] = await q<DeadlineRow & { course_code: string | null; teacher_name: string | null }>(
       `select d.id, d.title, d.due_at, d.description, d.link, d.source, d.course_id, c.title as course_title, c.code as course_code,
-              c.color, d.owner_id, ds.done_at, d.updated_at, t.full_name as teacher_name
+              c.color, d.owner_id, ds.done_at, d.updated_at, d.file_types, d.allow_late, t.full_name as teacher_name
          from deadlines d
          left join courses c on c.id = d.course_id
          left join profiles t on t.id = c.teacher_id
@@ -118,8 +121,19 @@ export function deadlineById(user: User, id: string) {
       `select send_at, sent_at, kind from reminders where deadline_id = $1 and student_id = app_uid() and not skipped order by send_at`,
       [id],
     );
-    return { ...d, reminders };
+    const files = await q<SubmissionFile>(
+      `select id, name, size, uploaded_at from submission_files where deadline_id = $1 and student_id = app_uid() order by uploaded_at`,
+      [id],
+    );
+    return { ...d, reminders, files };
   });
+}
+
+export interface SubmissionFile {
+  id: string;
+  name: string;
+  size: number;
+  uploaded_at: Date;
 }
 
 export interface NotificationRow {
@@ -266,12 +280,20 @@ export function teacherDeadlines(user: User) {
       group_ids: string[];
       total: number;
       done: number;
+      file_types: string[] | null;
+      allow_late: boolean;
+      /** Students who handed in files, and how many of them after the due time (by their last file). */
+      submitted: number;
+      late: number;
     }>(
-      `select d.id, d.title, d.due_at, d.description, d.link, d.course_id, c.title as course_title, c.color,
+      `select d.id, d.title, d.due_at, d.description, d.link, d.course_id, c.title as course_title, c.color, d.file_types, d.allow_late,
               coalesce(string_agg(distinct g.name, ', '), '') as group_names,
               coalesce(array_agg(distinct g.id) filter (where g.id is not null), '{}') as group_ids,
               (select count(distinct gm.student_id)::int from deadline_groups dg2 join group_members gm on gm.group_id = dg2.group_id where dg2.deadline_id = d.id) as total,
-              (select count(*)::int from deadline_status ds where ds.deadline_id = d.id) as done
+              (select count(*)::int from deadline_status ds where ds.deadline_id = d.id) as done,
+              (select count(distinct sf.student_id)::int from submission_files sf where sf.deadline_id = d.id) as submitted,
+              (select count(*)::int from (select max(sf.uploaded_at) as last from submission_files sf where sf.deadline_id = d.id group by sf.student_id) x
+                where x.last > d.due_at) as late
          from deadlines d
          join courses c on c.id = d.course_id and c.teacher_id = app_uid()
          left join deadline_groups dg on dg.deadline_id = d.id
@@ -281,6 +303,41 @@ export function teacherDeadlines(user: User) {
         order by (d.due_at < now()), case when d.due_at >= now() then d.due_at end asc, d.due_at desc`,
     ),
   );
+}
+
+/** One course deadline of this teacher with every student it is for and the files each handed in. */
+export function deadlineSubmissions(user: User, id: string) {
+  return withUser(user.id, async (q) => {
+    const [d] = await q<{
+      id: string;
+      title: string;
+      due_at: Date;
+      file_types: string[] | null;
+      allow_late: boolean;
+      course_title: string;
+      course_code: string;
+      color: string;
+    }>(
+      `select d.id, d.title, d.due_at, d.file_types, d.allow_late, c.title as course_title, c.code as course_code, c.color
+         from deadlines d join courses c on c.id = d.course_id and c.teacher_id = app_uid()
+        where d.id = $1 and d.deleted_at is null`,
+      [id],
+    );
+    if (!d) return null;
+    const students = await q<{ id: string; full_name: string; group_name: string }>(
+      `select distinct p.id, p.full_name, g.name as group_name
+         from deadline_groups dg join groups g on g.id = dg.group_id
+         join group_members gm on gm.group_id = dg.group_id join profiles p on p.id = gm.student_id
+        where dg.deadline_id = $1
+        order by g.name, p.full_name`,
+      [id],
+    );
+    const files = await q<SubmissionFile & { student_id: string }>(
+      `select id, student_id, name, size, uploaded_at from submission_files where deadline_id = $1 order by uploaded_at`,
+      [id],
+    );
+    return { ...d, students: students.map((s) => ({ ...s, files: files.filter((f) => f.student_id === s.id) })) };
+  });
 }
 
 export function teacherAnnouncements(user: User) {

@@ -19,13 +19,22 @@ npm install
 npm run dev
 ```
 
-Откройте http://localhost:3000 и нажмите **«Войти как студент»** или **«Войти как преподаватель»**.
+Откройте http://localhost:3000 и войдите почтой и паролем.
 
-Без `DATABASE_URL` приложение запускает встроенный Postgres (PGlite) в папке `.data/` и само заполняет его демо-данными
-относительно текущего времени: 2 группы, 5 предметов, расписание на 3 недели, 8 дедлайнов (через 1 час, через 20 часов, через 2 дня и позже, один просроченный), 3 объявления (одно важное), перенос пары и окно регистрации.
+### Аккаунты
 
-Демо-аккаунты (пароль `demo12345`): `student@narxoz.kz`, `teacher@narxoz.kz`, `teacher2@narxoz.kz`, эдвайзер `advisor@narxoz.kz`.
-Код преподавателя при регистрации в демо-режиме: `NARXOZ-TEACHER` (или ваш `TEACHER_CODE`).
+Регистрации нет: в системе только аккаунты университета — **5 преподавателей, 10 студентов (ИС-23-1 и ФИН-23-2) и 1 эдвайзер**.
+Список — в `lib/db/accounts.ts`. Пароли у каждого свои: они создаются при первом заполнении базы в `accounts.local.json`,
+а таблица «роль — имя — почта — пароль» для раздачи — в **`ACCOUNTS.local.md`**. Оба файла не попадают в git;
+`npm run db:reset` пароли не меняет. Чтобы выдать новый пароль, удалите строку человека из `accounts.local.json` и пересоздайте базу.
+
+**Безопасность и управление.** Эдвайзер в разделе «Аккаунты» добавляет людей, сбрасывает пароли (временный пароль
+показывается один раз, после входа UniOS просит придумать свой), блокирует и переводит студентов между группами.
+Каждый может сменить пароль в профиле и выйти на всех других устройствах. После 5 неверных паролей почта блокируется
+на 15 минут (адрес, который перебирает много почт, — после 20); заблокированный аккаунт войти не может.
+
+Без `DATABASE_URL` приложение запускает встроенный Postgres (PGlite) в папке `.data/` и само заполняет его этими аккаунтами
+и семестром относительно текущего времени: 5 предметов, расписание на 15 недель, оценки, посещаемость, дедлайны, объявления, справки и два прошлых семестра.
 
 Перед защитой пересоздайте базу, чтобы даты были «свежими»:
 
@@ -61,7 +70,7 @@ RLS (студент видит только свои группы, препод�
 | База | Postgres. Локально — PGlite (тот же Postgres 17 в WebAssembly), в проде — Supabase Postgres через `DATABASE_URL` |
 | Схема и RLS | `lib/db/migrations.ts` (то же самое в `supabase/migrations/*.sql`) |
 | Доступ к данным | Все чтения от имени пользователя идут через `withUser()` → `set local role uni_app` + `app.user_id`, поэтому **RLS реально применяется**. Роль `uni_app` умеет только `SELECT`; запись — через серверные действия с явной проверкой владельца курса |
-| Вход | Почта + пароль, magic link (Resend или ссылка в консоли), демо-кнопки. В боевом режиме (`DEMO_MODE=false`) — только `@narxoz.kz`. Роль преподавателя — по `TEACHER_CODE` или вручную в базе (`update profiles set role = 'teacher' …`) |
+| Вход | Почта + пароль; ссылка для входа по почте — если настроен Resend. Регистрации нет: аккаунты из `lib/db/accounts.ts` |
 | Напоминания | `lib/reminders/plan.ts` (чистая логика) → `engine.ts` (пересчёт таблицы `reminders`) → `dispatch.ts` (отправка) |
 | Планировщик | `/api/cron/tick`: pg_cron в Supabase вызывает его каждые 5 минут; локально `instrumentation-node.ts` тикает каждую минуту |
 | Telegram | `lib/telegram/bot.ts`: `/start <токен>`, `/today`, `/week`, `/deadlines`, кнопки «✅ Сделано», «⏰ Через 1 час», «Открыть в UniOS». Локально — long polling, в проде — webhook |
@@ -86,15 +95,16 @@ RLS (студент видит только свои группы, препод�
 
 ### 1. Supabase
 
-1. Создайте проект на https://supabase.com (регион — ближайший, например Frankfurt).
-2. **Project Settings → Database → Connection string → Transaction pooler** (порт 6543). Скопируйте строку — это `DATABASE_URL`.
-3. Примените схему, RLS и (по желанию) демо-данные — с вашего компьютера:
+1. Создайте проект на https://supabase.com, регион **Frankfurt (eu-central-1)**: функции Vercel работают там же (`vercel.json` → `fra1`).
+2. Кнопка **Connect → Transaction pooler** (порт 6543). Скопируйте строку — это `DATABASE_URL` — и вставьте в файл `.env.supabase`
+   (он не попадает в git; локальный сервер его не читает и остаётся на своей базе).
+3. Примените схему, RLS и заполните базу аккаунтами — с вашего компьютера (пароли возьмутся из вашего `accounts.local.json`):
 
    ```bash
-   DATABASE_URL="postgresql://postgres.xxxx:PASSWORD@aws-0-eu-central-1.pooler.supabase.com:6543/postgres" npm run db:migrate
+   npm run db:migrate
    ```
 
-   Без демо-данных: добавьте `SEED_DEMO=false`. Можно также вставить файлы из `supabase/migrations/` в SQL Editor.
+   Без заполнения: `SEED_DEMO=false npm run db:migrate`. Сам сайт на Vercel базу не заполняет — только этой командой.
 
 ### 2. Telegram-бот
 
@@ -117,8 +127,7 @@ RLS (студент видит только свои группы, препод�
    | `APP_URL` | `https://<ваш-проект>.vercel.app` |
    | `DATABASE_URL` | строка из Supabase (pooler, 6543) |
    | `AUTH_SECRET` | `openssl rand -base64 32` |
-   | `DEMO_MODE` | `true` на защите, `false` в бою |
-   | `TEACHER_CODE` | секретный код для преподавателей (эдвайзера назначают в базе: `update profiles set role = 'advisor'` + строка в `group_advisors`) |
+   | `DEMO_MODE` | `false` |
    | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` | из BotFather |
    | `TELEGRAM_MODE` | `webhook` |
    | `TELEGRAM_WEBHOOK_SECRET` | любая случайная строка |
@@ -147,7 +156,7 @@ RLS (студент видит только свои группы, препод�
 
 ```
 app/
-  login/                 вход, регистрация, magic link, демо-кнопки
+  login/                 вход (почта + пароль), ссылка по почте
   (app)/today|schedule|deadlines|announcements|registration|profile|notifications   — студент
   (app)/teacher/...      — преподаватель; (app)/metrics — метрики
   api/cron/tick          — планировщик;  api/telegram/webhook — бот

@@ -82,7 +82,7 @@ export default async function DeadlinesPage({ searchParams }: PageProps<"/deadli
       ) : (
         <div className="space-y-2">
           {list.map((d) => (
-            <DeadlineItem key={d.id} d={{ ...d, due_at: new Date(d.due_at).toISOString(), done: !!d.done_at }} />
+            <DeadlineItem key={d.id} d={{ ...d, due_at: new Date(d.due_at).toISOString(), done: !!d.done_at, files: !!d.file_types }} />
           ))}
         </div>
       )}

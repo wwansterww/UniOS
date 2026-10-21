@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bell, BookOpen, CalendarDays, ClipboardList, GraduationCap, Home, LayoutDashboard, Megaphone, Search, UserCheck, Users } from "lucide-react";
+import { Bell, BookOpen, CalendarDays, ClipboardList, GraduationCap, Home, KeyRound, LayoutDashboard, Megaphone, Search, UserCheck, Users } from "lucide-react";
 import { NarxozLogo } from "./logo";
 import { cn } from "./ui";
 import { useT } from "./i18n";
@@ -36,7 +36,10 @@ const teacherNav: Item[] = [
   { href: "/teacher/courses", label: (t) => t.nav.courses, icon: BookOpen, desktop: true },
 ];
 
-const advisorNav: Item[] = [{ href: "/advisor", label: (t) => t.nav.students, icon: Users, desktop: true }];
+const advisorNav: Item[] = [
+  { href: "/advisor", label: (t) => t.nav.students, icon: Users, desktop: true, mobile: true },
+  { href: "/advisor/accounts", label: (t) => t.nav.accounts, icon: KeyRound, desktop: true, mobile: true },
+];
 
 export function Shell({
   role,
@@ -53,7 +56,9 @@ export function Shell({
   const path = usePathname();
   const nav = role === "teacher" ? teacherNav : role === "advisor" ? advisorNav : studentNav;
   const mobileNav = nav.filter((i) => i.mobile);
-  const active = (href: string) => (href === "/teacher" ? path === href : path === href || path.startsWith(href + "/"));
+  // Section homes stay highlighted only on their own pages ("/advisor/accounts" is a section of its own).
+  const active = (href: string) =>
+    href === "/teacher" ? path === href : href === "/advisor" ? path === href || path.startsWith("/advisor/students") : path === href || path.startsWith(href + "/");
   const initials = name
     .split(" ")
     .map((p) => p[0])

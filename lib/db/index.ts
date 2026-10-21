@@ -11,7 +11,9 @@ export function db(): Promise<Db> {
   if (!g.__uniDb) {
     g.__uniDb = (async () => {
       const d = await createDb(process.env.DATABASE_URL, process.env.PGLITE_DIR ?? ".data/pglite");
-      if (process.env.SEED_DEMO !== "false") await seedIfEmpty(d);
+      // On Vercel the database is filled from your computer (npm run db:migrate): account passwords live only in
+      // your accounts.local.json, and the server's disk is read-only.
+      if (process.env.SEED_DEMO !== "false" && !process.env.VERCEL) await seedIfEmpty(d);
       return d;
     })().catch((e) => {
       g.__uniDb = undefined;

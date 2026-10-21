@@ -15,6 +15,10 @@ import { dictionaries } from "@/lib/i18n";
 import { syncCanvas, validateFeedUrl } from "@/lib/canvas";
 import { dispatchNow } from "@/lib/jobs";
 import { notify } from "@/lib/notifications/notify";
+import bcrypt from "bcryptjs";
+import { startSession } from "@/lib/auth";
+import { passwordProblem } from "@/lib/security";
+import { FILE_FORMATS, MAX_FILES, MAX_FILE_BYTES, MAX_FILE_MB, acceptsFile, isFileFormat, uploadState } from "@/lib/submissions";
 
 export type Result = { ok: boolean; message?: string; url?: string };
 
@@ -22,13 +26,18 @@ const refresh = () => revalidatePath("/", "layout");
 
 /** Can this user see the deadline (RLS)? */
 async function visibleDeadline(userId: string, id: string) {
-  const rows = await withUser(userId, (q) => q<{ id: string; owner_id: string | null }>(`select id, owner_id from deadlines where id = $1`, [id]));
+  const rows = await withUser(userId, (q) =>
+    q<{ id: string; owner_id: string | null; file_types: string[] | null }>(`select id, owner_id, file_types from deadlines where id = $1`, [id]),
+  );
   return rows[0] ?? null;
 }
 
 export async function setDone(deadlineId: string, done: boolean): Promise<Result> {
   const user = await requireUser("student");
-  if (!(await visibleDeadline(user.id, deadlineId))) return { ok: false };
+  const dl = await visibleDeadline(user.id, deadlineId);
+  if (!dl) return { ok: false };
+  // Work handed in as files is done when a file is uploaded, not by a tick.
+  if (dl.file_types) return { ok: false, message: dictionaries[user.locale].submit.needsFile };
   const d = await db();
   await d.tx((q) => (done ? markDone(q, user.id, deadlineId) : undoDone(q, user.id, deadlineId)));
   refresh();
@@ -276,4 +285,107 @@ export async function submitExcuse(form: FormData): Promise<Result> {
   });
   refresh();
   return res;
+}
+
+// ---------- file submissions ----------
+
+/** One file of the student's work for a deadline. Each file is its own request (≤ 4 MB, Vercel's body limit). */
+export async function uploadSubmission(form: FormData): Promise<Result> {
+  const user = await requireUser("student");
+  const t = dictionaries[user.locale];
+  const deadlineId = String(form.get("deadline_id") ?? "");
+  const file = form.get("file");
+  if (!/^[0-9a-f-]{36}$/.test(deadlineId) || !(file instanceof File) || file.size === 0) return { ok: false, message: t.common.error };
+  const dl = await visibleDeadline(user.id, deadlineId);
+  if (!dl?.file_types) return { ok: false, message: t.common.error };
+  if (file.size > MAX_FILE_BYTES) return { ok: false, message: t.submit.tooBig(MAX_FILE_MB) };
+  if (!acceptsFile(dl.file_types, file.name))
+    return { ok: false, message: t.submit.badType(dl.file_types.filter(isFileFormat).flatMap((f) => FILE_FORMATS[f]).join(", ")) };
+  const bytes = Buffer.from(await file.arrayBuffer());
+  // Keep the end of long names: it carries the extension.
+  const name = file.name.replace(/[\\/\u0000-\u001f]/g, "_").slice(-120);
+  const d = await db();
+  const res = await d.tx(async (q): Promise<Result> => {
+    // The row lock makes "closed?" and "how many files?" hold until the insert.
+    const [row] = await q<{ due_at: Date; file_types: string[] | null; allow_late: boolean }>(
+      `select due_at, file_types, allow_late from deadlines where id = $1 and deleted_at is null for update`,
+      [deadlineId],
+    );
+    if (!row) return { ok: false, message: t.common.error };
+    const state = uploadState(row);
+    if (state === "none" || state === "closed") return { ok: false, message: t.submit.closedToast };
+    const [{ n }] = await q<{ n: number }>(`select count(*)::int as n from submission_files where deadline_id = $1 and student_id = $2`, [deadlineId, user.id]);
+    if (n >= MAX_FILES) return { ok: false, message: t.submit.tooMany(MAX_FILES) };
+    await q(`insert into submission_files (deadline_id, student_id, name, size, data) values ($1, $2, $3, $4, $5)`, [
+      deadlineId,
+      user.id,
+      name,
+      bytes.length,
+      bytes,
+    ]);
+    await markDone(q, user.id, deadlineId);
+    await logEvent(q, user.id, "submission_uploaded", { deadline_id: deadlineId, late: state === "late" });
+    return { ok: true, message: t.submit.uploaded };
+  });
+  refresh();
+  return res;
+}
+
+/** Removes one of the student's files while uploads are still open. The last one gone = not handed in. */
+export async function deleteSubmissionFile(id: string): Promise<Result> {
+  const user = await requireUser("student");
+  const t = dictionaries[user.locale];
+  if (!/^[0-9a-f-]{36}$/.test(id)) return { ok: false, message: t.common.error };
+  const d = await db();
+  const res = await d.tx(async (q): Promise<Result> => {
+    const [f] = await q<{ deadline_id: string; due_at: Date; file_types: string[] | null; allow_late: boolean }>(
+      `select sf.deadline_id, d.due_at, d.file_types, d.allow_late from submission_files sf join deadlines d on d.id = sf.deadline_id
+        where sf.id = $1 and sf.student_id = $2 and d.deleted_at is null`,
+      [id, user.id],
+    );
+    if (!f) return { ok: false, message: t.common.error };
+    const state = uploadState(f);
+    if (state === "none" || state === "closed") return { ok: false, message: t.submit.closedToast };
+    await q(`delete from submission_files where id = $1`, [id]);
+    const [{ n }] = await q<{ n: number }>(`select count(*)::int as n from submission_files where deadline_id = $1 and student_id = $2`, [f.deadline_id, user.id]);
+    if (n === 0) await undoDone(q, user.id, f.deadline_id);
+    return { ok: true, message: t.submit.removed };
+  });
+  refresh();
+  return res;
+}
+
+// ---------- security ----------
+
+/** Changes one's own password; other devices are signed out, this one stays signed in. */
+export async function changePassword(form: FormData): Promise<Result> {
+  const user = await requireUser();
+  const t = dictionaries[user.locale];
+  const current = String(form.get("current") ?? "");
+  const next = String(form.get("next") ?? "").slice(0, 200);
+  if (next !== String(form.get("repeat") ?? "")) return { ok: false, message: t.profile.passwordMismatch };
+  const problem = passwordProblem(next, user);
+  if (problem) return { ok: false, message: { short: t.profile.passwordShort, weak: t.profile.passwordWeak, personal: t.profile.passwordPersonal }[problem] };
+  const d = await db();
+  const [p] = await d.q<{ password_hash: string | null }>(`select password_hash from profiles where id = $1`, [user.id]);
+  if (!p?.password_hash || !(await bcrypt.compare(current, p.password_hash))) return { ok: false, message: t.profile.passwordWrong };
+  if (current === next) return { ok: false, message: t.profile.passwordSame };
+  await d.q(
+    `update profiles set password_hash = $2, must_change_password = false, session_version = session_version + 1 where id = $1`,
+    [user.id, await bcrypt.hash(next, 10)],
+  );
+  await startSession(user.id);
+  await logEvent(d.q, user.id, "password_changed", {});
+  refresh();
+  return { ok: true, message: t.profile.passwordChanged };
+}
+
+/** Ends every other session of this account (lost phone, shared computer). */
+export async function signOutEverywhere(): Promise<Result> {
+  const user = await requireUser();
+  const d = await db();
+  await d.q(`update profiles set session_version = session_version + 1 where id = $1`, [user.id]);
+  await startSession(user.id);
+  await logEvent(d.q, user.id, "signed_out_everywhere", {});
+  return { ok: true, message: dictionaries[user.locale].profile.loggedOutEverywhere };
 }

@@ -11,6 +11,8 @@ const inter = Inter({ variable: "--font-inter", subsets: ["latin", "cyrillic", "
 const display = Inter_Tight({ variable: "--font-inter-tight", subsets: ["latin", "cyrillic", "cyrillic-ext"] });
 
 export const metadata: Metadata = {
+  // Absolute links for link previews (the logo image) point at the deployed site.
+  metadataBase: new URL(process.env.APP_URL || "http://localhost:3000"),
   title: { default: "UniOS", template: "%s · UniOS" },
   description: "Расписание, дедлайны и объявления Нархоза — в одном месте",
   appleWebApp: { capable: true, title: "UniOS", statusBarStyle: "black-translucent" },

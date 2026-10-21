@@ -10,6 +10,7 @@ import { DeadlineItem } from "@/components/bits";
 import { DeadlineOpenTracker } from "@/components/metrics-tracker";
 import { Badge, Card, CourseDot, buttonClass } from "@/components/ui";
 import { DeletePersonal } from "./delete-personal";
+import { SubmissionCard } from "./submission";
 
 export const metadata: Metadata = { title: "Дедлайн" };
 
@@ -39,7 +40,7 @@ export default async function DeadlinePage({ params, searchParams }: PageProps<"
         <h1 className="mt-1 text-3xl font-semibold tracking-tight">{d.title}</h1>
       </div>
 
-      <DeadlineItem d={{ ...d, due_at: due.toISOString(), done: !!d.done_at }} compact />
+      <DeadlineItem d={{ ...d, due_at: due.toISOString(), done: !!d.done_at, files: !!d.file_types }} compact />
 
       <Card className="space-y-3">
         <div>
@@ -60,6 +61,16 @@ export default async function DeadlinePage({ params, searchParams }: PageProps<"
           </a>
         )}
       </Card>
+
+      {d.file_types && (
+        <SubmissionCard
+          deadlineId={d.id}
+          due={due.toISOString()}
+          formats={d.file_types}
+          allowLate={d.allow_late}
+          files={d.files.map((f) => ({ ...f, uploaded_at: new Date(f.uploaded_at).toISOString() }))}
+        />
+      )}
 
       <Card>
         <p className="mb-2 flex items-center gap-2 font-bold">

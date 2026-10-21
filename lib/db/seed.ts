@@ -3,52 +3,38 @@ import type { Db, Q } from "./core";
 import { recomputeForDeadline } from "../reminders/engine";
 import { DAY, HOUR, MIN, addDays, fromZoned, startOfWeek, zoned } from "../time";
 import { currentTerm, termParts, type Category } from "../journal";
+import { ADVISOR, MAIN_STUDENT, STUDENTS, TEACHERS, accountPasswords } from "./accounts";
 
-export const DEMO_PASSWORD = "demo12345";
-export const DEMO_STUDENT = "student@narxoz.kz";
-export const DEMO_TEACHER = "teacher@narxoz.kz";
-export const DEMO_ADVISOR = "advisor@narxoz.kz";
+export { MAIN_STUDENT, MAIN_TEACHER } from "./accounts";
 
-const STUDENT_NAMES = [
-  "Айдана Серікова", "Нурсултан Ахметов", "Дана Жумабекова", "Ерлан Касымов", "Алия Нурланова",
-  "Тимур Бекжанов", "Мадина Оспанова", "Арман Тлеубаев", "Жанель Сапарова", "Данияр Мухамедов",
-  "Камила Абдрахманова", "Ислам Ермеков", "Аружан Калиева", "Бекзат Нуртаев", "Сабина Ким",
-  "Алихан Досымов", "Томирис Байжанова", "Максат Сейткали", "Дильназ Утегенова", "Руслан Петров",
-  "Асель Жаксылыкова", "Ернар Смагулов", "Инкар Турсынова", "Олжас Кенжебаев",
-  "Мирас Абенов", "Айгерим Толегенова", "Санжар Есенов", "Карина Ли", "Нуржан Сагинтаев",
-  "Акбота Мусина", "Диас Карибаев", "Злата Иванова", "Ильяс Аманов", "Меруерт Жанибекова",
-];
-
-/** Fills an empty database with a believable week at Narxoz, relative to `now`. */
+/** Fills an empty database with the university's accounts and a believable semester, relative to `now`. */
 export async function seedIfEmpty(db: Db, now = new Date()) {
   const [{ n }] = await db.q<{ n: number }>(`select count(*)::int as n from profiles`);
   if (n > 0) {
-    // Demo databases created before the gradebook existed get demo grades and attendance once.
+    // Databases created before the gradebook (or file submissions) existed get them once.
     await db.tx((q) => seedJournal(q, now));
+    await db.tx((q) => seedSubmissions(q, now));
     return false;
   }
   await db.tx((q) => seed(q, now));
   return true;
 }
 
-export async function seed(q: Q, now = new Date()) {
-  const hash = bcrypt.hashSync(DEMO_PASSWORD, 8);
+/** `password(email)` defaults to the per-account passwords in accounts.local.json (tests pass their own). */
+export async function seed(q: Q, now = new Date(), password: (email: string) => string = (e) => accountPasswords()[e]) {
   const ins = async (sql: string, params: unknown[]) => (await q<{ id: string }>(sql + " returning id", params))[0].id;
-  const profile = (email: string, name: string, role: "student" | "teacher" | "advisor") =>
-    ins(`insert into profiles (email, full_name, role, password_hash) values ($1, $2, $3, $4)`, [email, name, role, hash]);
+  const profile = (a: { email: string; name: string; role: string }) =>
+    ins(`insert into profiles (email, full_name, role, password_hash) values ($1, $2, $3, $4)`, [a.email, a.name, a.role, bcrypt.hashSync(password(a.email), 8)]);
 
-  // People
-  const teacher = await profile(DEMO_TEACHER, "Айгерим Сапарова", "teacher");
-  const teacher2 = await profile("teacher2@narxoz.kz", "Бауыржан Омаров", "teacher");
-  const teacher3 = await profile("teacher3@narxoz.kz", "Даурен Жаксыбеков", "teacher");
-  const advisor = await profile(DEMO_ADVISOR, "Гульнара Сейтова", "advisor");
-  const student = await profile(DEMO_STUDENT, "Алибек Нурланов", "student");
-  const studentsIS = [student];
+  // People: 5 teachers, 1 advisor, 10 students — and nobody else.
+  const teachers: string[] = [];
+  for (const a of TEACHERS) teachers.push(await profile(a));
+  const [teacher, teacher2, teacher3, teacher4, teacher5] = teachers;
+  const advisor = await profile(ADVISOR);
+  const studentsIS: string[] = [];
   const studentsFIN: string[] = [];
-  for (let i = 0; i < STUDENT_NAMES.length; i++) {
-    const id = await profile(`s${i + 1}@narxoz.kz`, STUDENT_NAMES[i], "student");
-    (i < 24 ? studentsIS : studentsFIN).push(id);
-  }
+  for (const a of STUDENTS) (a.group === "IS" ? studentsIS : studentsFIN).push(await profile(a));
+  const student = studentsIS[0];
 
   // Groups
   const gIS = await ins(`insert into groups (name, invite_code, created_by) values ('ИС-23-1', 'IS231', $1)`, [teacher]);
@@ -57,15 +43,15 @@ export async function seed(q: Q, now = new Date()) {
   for (const s of studentsFIN) await q(`insert into group_members (group_id, student_id) values ($1, $2)`, [gFIN, s]);
   for (const g of [gIS, gFIN]) await q(`insert into group_advisors (group_id, advisor_id) values ($1, $2)`, [g, advisor]);
 
-  // Courses: the demo student's real Narxoz timetable (fall 2026)
+  // Courses: the main student's real Narxoz timetable (fall 2026)
   const term = currentTerm(now);
   const course = (teacherId: string, title: string, code: string, color: string, credits: number, courseTerm = term) =>
     ins(`insert into courses (teacher_id, title, code, color, credits, term) values ($1, $2, $3, $4, $5, $6)`, [teacherId, title, code, color, credits, courseTerm]);
   const iot = await course(teacher, "Интернет вещей", "CSE 341", "#4F7CF7", 6);
   const games = await course(teacher, "Основы разработки игр", "CSE 352", "#8B5CF6", 5);
-  const ent = await course(teacher, "Технологическое предпринимательство", "MGT 410", "#F2994A", 5);
+  const ent = await course(teacher5, "Технологическое предпринимательство", "MGT 410", "#F2994A", 5);
   const mkt = await course(teacher2, "Маркетинговая стратегия", "MKT 305", "#E0699B", 5);
-  const tour = await course(teacher2, "Minor: География международного туризма", "TOU 220", "#22A699", 3);
+  const tour = await course(teacher4, "Minor: География международного туризма", "TOU 220", "#22A699", 3);
   const link = (c: string, g: string) => q(`insert into course_groups (course_id, group_id) values ($1, $2)`, [c, g]);
   for (const c of [iot, games, ent, mkt, tour]) await link(c, gIS);
   for (const c of [ent, mkt, tour]) await link(c, gFIN);
@@ -74,17 +60,17 @@ export async function seed(q: Q, now = new Date()) {
   const { year, fall } = termParts(term);
   const prev = fall ? `${year}-1` : `${year - 1}-2`;
   const prevPrev = fall ? `${year - 1}-2` : `${year - 1}-1`;
-  const past: [string, string, string, number, string][] = [
-    ["Базы данных", "CSE 230", "#0EA5E9", 5, prev],
-    ["Веб-разработка", "CSE 240", "#14B8A6", 5, prev],
-    ["Теория вероятностей и статистика", "MAT 210", "#A855F7", 5, prev],
-    ["Английский язык (B2)", "ENG 202", "#F59E0B", 4, prev],
-    ["Алгоритмы и структуры данных", "CSE 220", "#3B82F6", 6, prevPrev],
-    ["Операционные системы", "CSE 260", "#64748B", 5, prevPrev],
-    ["Философия", "PHI 101", "#EC4899", 3, prevPrev],
-    ["Казахский язык", "KAZ 201", "#22C55E", 3, prevPrev],
+  const past: [string, string, string, number, string, string][] = [
+    ["Базы данных", "CSE 230", "#0EA5E9", 5, prev, teacher3],
+    ["Веб-разработка", "CSE 240", "#14B8A6", 5, prev, teacher3],
+    ["Теория вероятностей и статистика", "MAT 210", "#A855F7", 5, prev, teacher4],
+    ["Английский язык (B2)", "ENG 202", "#F59E0B", 4, prev, teacher5],
+    ["Алгоритмы и структуры данных", "CSE 220", "#3B82F6", 6, prevPrev, teacher3],
+    ["Операционные системы", "CSE 260", "#64748B", 5, prevPrev, teacher3],
+    ["Философия", "PHI 101", "#EC4899", 3, prevPrev, teacher4],
+    ["Казахский язык", "KAZ 201", "#22C55E", 3, prevPrev, teacher5],
   ];
-  for (const [title, code, color, credits, t] of past) await link(await course(teacher3, title, code, color, credits, t), gIS);
+  for (const [title, code, color, credits, t, by] of past) await link(await course(by, title, code, color, credits, t), gIS);
 
   // Weekly timetable: [weekday 0=Mon, "HH:MM", course, room]. Narxoz pairs are 75 minutes.
   const slots: Record<string, [number, string, string, string][]> = {
@@ -153,10 +139,10 @@ export async function seed(q: Q, now = new Date()) {
     [iot, teacher, [gIS], "Лабораторная №3: датчики и MQTT", at(1 * HOUR), "Схема подключения, код для ESP32 и скриншот MQTT-брокера — в Canvas.", "https://canvas.instructure.com"],
     [mkt, teacher2, [gIS, gFIN], "Кейс: маркетинговая стратегия для Kaspi", at(20 * HOUR), "SWOT, сегментация, позиционирование. 8–10 слайдов.", null],
     [games, teacher, [gIS], "Прототип игры в Unity: первый уровень", atDay(2, 23, 59), "Билд под Windows/WebGL и ссылка на репозиторий.", "https://github.com"],
-    [ent, teacher, [gIS, gFIN], "Бизнес-модель стартапа (Lean Canvas)", atDay(3, 18, 0), "Один лист Lean Canvas + 3 гипотезы для проверки.", null],
-    [tour, teacher2, [gIS, gFIN], "Презентация: туристический потенциал Казахстана", atDay(5, 10, 0), "10 минут, регион на выбор.", null],
+    [ent, teacher5, [gIS, gFIN], "Бизнес-модель стартапа (Lean Canvas)", atDay(3, 18, 0), "Один лист Lean Canvas + 3 гипотезы для проверки.", null],
+    [tour, teacher4, [gIS, gFIN], "Презентация: туристический потенциал Казахстана", atDay(5, 10, 0), "10 минут, регион на выбор.", null],
     [iot, teacher, [gIS], "Midterm: Интернет вещей", atDay(7, 12, 30), "Протоколы, сенсоры, архитектура IoT-систем.", null],
-    [ent, teacher, [gIS, gFIN], "Питч стартапа: финальная версия", atDay(10, 23, 59), "Видео-питч до 3 минут + дек.", null],
+    [ent, teacher5, [gIS, gFIN], "Питч стартапа: финальная версия", atDay(10, 23, 59), "Видео-питч до 3 минут + дек.", null],
     [mkt, teacher2, [gIS, gFIN], "Тест: сегментация рынка", atDay(-1, 18, 0), "Онлайн-тест в Canvas.", null],
   ];
   const ids: string[] = [];
@@ -168,7 +154,7 @@ export async function seed(q: Q, now = new Date()) {
     for (const g of groups) await q(`insert into deadline_groups (deadline_id, group_id) values ($1, $2)`, [id, g]);
     ids.push(id);
   }
-  // Personal task for the demo student
+  // Personal task of the main student
   ids.push(
     await ins(`insert into deadlines (owner_id, title, due_at, description, created_by) values ($1, $2, $3, $4, $1)`, [
       student,
@@ -180,7 +166,7 @@ export async function seed(q: Q, now = new Date()) {
   // Some classmates already did things (for "сделали N из M" and metrics)
   const everyone = [...studentsIS.slice(1), ...studentsFIN];
   for (const [i, s] of everyone.entries()) {
-    if (i % 3 === 0 && i < 24) await q(`insert into deadline_status (student_id, deadline_id, done_at) values ($1, $2, $3)`, [s, ids[0], at(-2 * HOUR).toISOString()]);
+    if (i % 3 === 0) await q(`insert into deadline_status (student_id, deadline_id, done_at) values ($1, $2, $3)`, [s, ids[0], at(-2 * HOUR).toISOString()]);
     if (i % 2 === 0) await q(`insert into deadline_status (student_id, deadline_id, done_at) values ($1, $2, $3)`, [s, ids[7], at(-30 * HOUR).toISOString()]);
   }
 
@@ -193,10 +179,10 @@ export async function seed(q: Q, now = new Date()) {
   const a1Title = "Midterm по Интернету вещей — в аудитории 503";
   const a1 = await ann(iot, teacher, a1Title, "Midterm пройдёт на следующей неделе в 12:30. Возьмите студенческий билет. Разрешён один лист A4 с конспектом.", true, true, 5 * HOUR);
   const a2 = await ann(games, teacher, "Материалы к лекции 6 загружены", "Ассеты и шаблон проекта Unity — в Canvas, раздел «Модуль 6».", false, false, 26 * HOUR);
-  const a3 = await ann(ent, teacher, "Консультация по бизнес-модели", "В пятницу после пары, ауд. 315. Приходите с черновиком Lean Canvas.", false, false, 50 * HOUR);
+  const a3 = await ann(ent, teacher5, "Консультация по бизнес-модели", "В пятницу после пары, ауд. 315. Приходите с черновиком Lean Canvas.", false, false, 50 * HOUR);
   for (const [i, s] of studentsIS.slice(1).entries()) {
-    if (i < 18) await q(`insert into announcement_reads (announcement_id, student_id) values ($1, $2)`, [a1, s]);
-    if (i < 12) await q(`insert into announcement_reads (announcement_id, student_id) values ($1, $2)`, [a2, s]);
+    if (i < 4) await q(`insert into announcement_reads (announcement_id, student_id) values ($1, $2)`, [a1, s]);
+    if (i < 3) await q(`insert into announcement_reads (announcement_id, student_id) values ($1, $2)`, [a2, s]);
     await q(`insert into announcement_reads (announcement_id, student_id) values ($1, $2)`, [a3, s]);
   }
   for (const s of studentsFIN) await q(`insert into announcement_reads (announcement_id, student_id) values ($1, $2)`, [a3, s]);
@@ -220,6 +206,7 @@ export async function seed(q: Q, now = new Date()) {
   );
 
   await seedJournal(q, now);
+  await seedSubmissions(q, now);
 
   // Notification settings for everyone (defaults) + reminders for all deadlines
   await q(`insert into notification_prefs (user_id) select id from profiles on conflict do nothing`);
@@ -233,6 +220,113 @@ export async function seed(q: Q, now = new Date()) {
       new Date(now.getTime() - (i + 1) * HOUR).toISOString(),
     ]);
   }
+}
+
+/**
+ * Demo file submissions: some deadlines take files, and a past homework shows work handed in on time and late
+ * (it accepts late work). Runs once, for the demo dataset only — also on databases made before submissions existed.
+ */
+export async function seedSubmissions(q: Q, now = new Date()) {
+  const [demo] = await q<{ id: string }>(`select id from profiles where email = $1`, [MAIN_STUDENT]);
+  if (!demo) return;
+  const [{ n }] = await q<{ n: number }>(
+    `select ((select count(*) from submission_files) + (select count(*) from deadlines where file_types is not null))::int as n`,
+  );
+  if (n > 0) return;
+
+  // [title, formats, accept late work]
+  const rules: [string, string[], boolean][] = [
+    ["Лабораторная №3: датчики и MQTT", ["pdf", "ipynb", "zip"], false],
+    ["Кейс: маркетинговая стратегия для Kaspi", ["ppt", "pdf"], true],
+    ["Бизнес-модель стартапа (Lean Canvas)", ["pdf", "image"], false],
+    ["Презентация: туристический потенциал Казахстана", ["ppt", "pdf"], false],
+  ];
+  for (const [title, types, late] of rules)
+    await q(`update deadlines set file_types = string_to_array($2::text, ','), allow_late = $3 where title = $1 and course_id is not null`, [
+      title,
+      types.join(","),
+      late,
+    ]);
+  // On those deadlines "done" means a file: classmates who ticked one off get a file, other ticks are dropped.
+  const ticked = await q<{ deadline_id: string; student_id: string; email: string; done_at: Date; member: boolean }>(
+    `select ds.deadline_id, ds.student_id, p.email, ds.done_at,
+            exists (select 1 from deadline_groups dg join group_members gm on gm.group_id = dg.group_id
+                     where dg.deadline_id = ds.deadline_id and gm.student_id = ds.student_id) as member
+       from deadline_status ds join deadlines d on d.id = ds.deadline_id join profiles p on p.id = ds.student_id
+      where d.file_types is not null`,
+  );
+  for (const r of ticked) {
+    if (r.member) await addDemoFile(q, r.deadline_id, r.student_id, `${r.email.split("@")[0]}_report.pdf`, new Date(r.done_at));
+    else await q(`delete from deadline_status where deadline_id = $1 and student_id = $2`, [r.deadline_id, r.student_id]);
+  }
+
+  // A homework three days ago that still takes late work: on time, late by hours, a day late, not handed in.
+  const [course] = await q<{ id: string; teacher_id: string }>(`select id, teacher_id from courses where code = 'CSE 341' order by term desc limit 1`);
+  const [group] = await q<{ id: string }>(`select id from groups where name = 'ИС-23-1'`);
+  if (!course || !group) return;
+  const p = zoned(addDays(now, -3));
+  const due = fromZoned(p.year, p.month, p.day, 23, 59);
+  const [hw] = await q<{ id: string }>(
+    `insert into deadlines (course_id, title, due_at, description, created_by, created_at, file_types, allow_late)
+     values ($1, $2, $3, $4, $5, $6, '{pdf,image}', true) returning id`,
+    [
+      course.id,
+      "Домашнее задание: схема умного дома",
+      due.toISOString(),
+      "Схема устройств и связей между ними — PDF или фото от руки. Принимается и после срока, с пометкой об опоздании.",
+      course.teacher_id,
+      new Date(due.getTime() - 7 * DAY).toISOString(),
+    ],
+  );
+  await q(`insert into deadline_groups (deadline_id, group_id) values ($1, $2)`, [hw.id, group.id]);
+  const classmates = await q<{ id: string; email: string }>(
+    `select p.id, p.email from group_members gm join profiles p on p.id = gm.student_id where gm.group_id = $1 and p.id <> $2 order by p.email`,
+    [group.id, demo.id],
+  );
+  // Minutes from the due time; null = not handed in. The main student hasn't handed it in either (late upload is open).
+  const offsets = [-26 * 60, -5 * 60, 3 * 60 + 20, 26 * 60 + 10, null];
+  for (const [i, s] of classmates.entries()) {
+    const off = offsets[i % offsets.length];
+    if (off === null) continue;
+    const at = new Date(due.getTime() + off * MIN);
+    await addDemoFile(q, hw.id, s.id, `${s.email.split("@")[0]}_smart-home.pdf`, at);
+    await q(`insert into deadline_status (student_id, deadline_id, done_at) values ($1, $2, $3) on conflict do nothing`, [s.id, hw.id, at.toISOString()]);
+  }
+  for (const d of new Set(ticked.map((r) => r.deadline_id))) await recomputeForDeadline(q, d, { now });
+}
+
+async function addDemoFile(q: Q, deadlineId: string, studentId: string, name: string, at: Date) {
+  const data = demoPdf(`UniOS demo - ${name}`);
+  await q(`insert into submission_files (deadline_id, student_id, name, size, data, uploaded_at) values ($1, $2, $3, $4, $5, $6)`, [
+    deadlineId,
+    studentId,
+    name,
+    data.length,
+    data,
+    at.toISOString(),
+  ]);
+}
+
+/** A one-page PDF with a line of (ASCII) text, so demo files open like real ones. */
+function demoPdf(text: string) {
+  const content = `BT /F1 16 Tf 72 720 Td (${text.replace(/[()\\]/g, "")}) Tj ET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const at: number[] = [];
+  objects.forEach((o, i) => {
+    at.push(pdf.length);
+    pdf += `${i + 1} 0 obj\n${o}\nendobj\n`;
+  });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${at.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, "latin1");
 }
 
 /** Deterministic pseudo-random number in [0, 1) for a key (FNV-1a hash). */
@@ -259,7 +353,7 @@ const WORKS: Record<string, [string, number, Category, boolean][]> = {
 // Finished courses: both midterms and the exam are graded.
 const PAST_WORKS: [string, number, Category, boolean][] = [["Рубежный контроль 1", 100, "rk1", true], ["Рубежный контроль 2", 100, "rk2", true], ["Экзамен", 100, "exam", true]];
 
-// Teacher comments the demo student sees under a grade: [course code, work title, comment].
+// Teacher comments the main student sees under a grade: [course code, work title, comment].
 const COMMENTS: [string, string, string][] = [
   ["CSE 341", "Квиз: протоколы IoT", "Хорошо! Но CoAP разобран поверхностно — перечитай лекцию 5."],
   ["MKT 305", "Кейс: Starbucks в Казахстане", "Сильный SWOT, но сегментация слабая: добавь портрет клиента."],
@@ -267,9 +361,9 @@ const COMMENTS: [string, string, string][] = [
 
 // Fixed absences ("НБ") per student and course, so the 25% limit has something to show. Everyone else: random.
 const ABSENCES: Record<string, { absent: Record<string, number>; late?: Record<string, number> }> = {
-  [DEMO_STUDENT]: { absent: { "MKT 305": 6, "CSE 341": 2, "CSE 352": 1 }, late: { "CSE 341": 1 } }, // 1 absence left in marketing
-  "s4@narxoz.kz": { absent: { "CSE 341": 8 } }, // Ерлан Касымов: over the limit
-  "s6@narxoz.kz": { absent: { "CSE 352": 6 } }, // Тимур Бекжанов: 1 absence left
+  [MAIN_STUDENT]: { absent: { "MKT 305": 6, "CSE 341": 2, "CSE 352": 1 }, late: { "CSE 341": 1 } }, // 1 absence left in marketing
+  "e.kasymov@narxoz.kz": { absent: { "CSE 341": 8 } }, // Ерлан Касымов: over the limit
+  "t.bekzhanov@narxoz.kz": { absent: { "CSE 352": 6 } }, // Тимур Бекжанов: 1 absence left
 };
 
 /** Inserts rows in one statement: cols are "name type" pairs of the table. */
@@ -287,7 +381,7 @@ async function insertMany(q: Q, table: string, cols: string[], rows: Record<stri
  * that already ended. Runs only for the demo dataset and only while both tables are empty.
  */
 export async function seedJournal(q: Q, now = new Date()) {
-  const [demo] = await q<{ id: string }>(`select id from profiles where email = $1`, [DEMO_STUDENT]);
+  const [demo] = await q<{ id: string }>(`select id from profiles where email = $1`, [MAIN_STUDENT]);
   if (!demo) return;
   const [{ n }] = await q<{ n: number }>(`select ((select count(*) from assessments) + (select count(*) from attendance))::int as n`);
   if (n > 0) return;
@@ -296,7 +390,7 @@ export async function seedJournal(q: Q, now = new Date()) {
   const students = await q<{ course_id: string; student_id: string }>(
     `select distinct cg.course_id, gm.student_id from course_groups cg join group_members gm on gm.group_id = cg.group_id`,
   );
-  // Each student has an overall level; the demo student is a solid "B+" student.
+  // Each student has an overall level; the main student is a solid "B+" student.
   const level = (s: string) => (s === demo.id ? 0.86 : 0.6 + 0.38 * rnd("lvl" + s));
   const grades: Record<string, unknown>[] = [];
   for (const c of courses) {
@@ -369,11 +463,11 @@ export async function seedJournal(q: Q, now = new Date()) {
     );
     if (approved) await q(`update attendance set status = 'excused' where session_id = $1 and student_id = $2`, [a.session_id, a.student_id]);
   };
-  await excuse(DEMO_STUDENT, "CSE 352", 0, "ОРВИ, справка 095/у из поликлиники №5", true);
-  await excuse(DEMO_STUDENT, "CSE 341", 0, "Был на олимпиаде по программированию от университета, есть письмо от деканата", false);
-  await excuse("s4@narxoz.kz", "CSE 341", 1, "Семейные обстоятельства, справка из ЦОНа", false);
+  await excuse(MAIN_STUDENT, "CSE 352", 0, "ОРВИ, справка 095/у из поликлиники №5", true);
+  await excuse(MAIN_STUDENT, "CSE 341", 0, "Был на олимпиаде по программированию от университета, есть письмо от деканата", false);
+  await excuse("e.kasymov@narxoz.kz", "CSE 341", 1, "Семейные обстоятельства, справка из ЦОНа", false);
 
-  // The demo student sees a fresh grade on Today.
+  // The main student sees a fresh grade on Today.
   const [quiz] = await q<{ id: string; title: string }>(
     `select a.id, a.title from assessments a join courses c on c.id = a.course_id where c.code = 'CSE 341' and a.title like 'Квиз%'`,
   );

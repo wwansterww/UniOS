@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowRight, Bell, CalendarPlus, GraduationCap, LineChart, Palette, Send, Users } from "lucide-react";
+import { ArrowRight, Bell, CalendarPlus, GraduationCap, LineChart, Palette, Send, ShieldCheck, Users } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getT } from "@/lib/i18n/server";
@@ -8,7 +8,8 @@ import { myGroups, myPrefs } from "@/lib/queries";
 import { appUrl, botToken, botUsername } from "@/lib/telegram/api";
 import { formatDateTime } from "@/lib/time";
 import { Badge, Card, PageTitle } from "@/components/ui";
-import { Appearance, CanvasForm, CopyField, JoinGroupForm, PrefsForm, TelegramCard } from "./forms";
+import { Appearance, CanvasForm, CopyField, JoinGroupForm, PasswordForm, PrefsForm, SignOutEverywhere, TelegramCard } from "./forms";
+import { deviceName } from "@/lib/security";
 
 export const metadata: Metadata = { title: "Профиль" };
 
@@ -29,12 +30,16 @@ export default async function ProfilePage() {
   const { t, locale } = await getT();
   const student = user.role === "student";
   const d = await db();
-  const [prefs, groups, [canvas]] = await Promise.all([
+  const [prefs, groups, [canvas], logins] = await Promise.all([
     myPrefs(user),
     student ? myGroups(user) : Promise.resolve([]),
     d.q<{ canvas_feed_url: string | null; canvas_synced_at: Date | null; canvas_error: string | null }>(
       `select canvas_feed_url, canvas_synced_at, canvas_error from profiles where id = $1`,
       [user.id],
+    ),
+    d.q<{ created_at: Date; user_agent: string; ip: string }>(
+      `select created_at, user_agent, ip from login_attempts where email = $1 and ok order by created_at desc limit 3`,
+      [user.email],
     ),
   ]);
   const icsUrl = `${appUrl()}/api/ics/${user.ics_token}`;
@@ -58,6 +63,30 @@ export default async function ProfilePage() {
           {student ? t.profile.student : user.role === "advisor" ? t.profile.advisor : t.profile.teacher}
         </Badge>
       </Card>
+
+      <Section id="security" icon={ShieldCheck} title={t.profile.security} hint={t.profile.securityHint}>
+        {user.must_change_password && <p className="mb-4 rounded-xl bg-warn-soft px-4 py-3 text-sm font-medium text-warn">{t.profile.tempPassword}</p>}
+        <PasswordForm />
+        <div className="mt-6 border-t border-border pt-5">
+          <p className="mb-2 text-sm font-semibold">{t.profile.recentLogins}</p>
+          {logins.length === 0 ? (
+            <p className="text-sm text-muted">{t.profile.noLogins}</p>
+          ) : (
+            <ul className="mb-4 space-y-1.5 text-sm">
+              {logins.map((l) => (
+                <li key={new Date(l.created_at).toISOString()} className="flex flex-wrap justify-between gap-x-3 text-muted">
+                  <span className="text-fg">{deviceName(l.user_agent) || "—"}</span>
+                  <span className="tabular-nums">
+                    {formatDateTime(new Date(l.created_at), locale)}
+                    {l.ip && !/^(::1|127\.|::ffff:127\.)/.test(l.ip) && ` · ${l.ip}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <SignOutEverywhere />
+        </div>
+      </Section>
 
       {student && (
         <Section id="groups" icon={Users} title={t.profile.groups}>

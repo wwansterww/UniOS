@@ -3,13 +3,14 @@
 import { useState } from "react";
 import { useAction } from "@/components/use-action";
 import { useRouter } from "next/navigation";
-import { Check, Copy, Link2, LogOut, RefreshCw, Send, Unlink } from "lucide-react";
+import { Check, Copy, KeyRound, Link2, LogOut, MonitorSmartphone, RefreshCw, Send, Unlink } from "lucide-react";
 import { toast } from "sonner";
 import { Button, Field, Input, cn } from "@/components/ui";
 import { useT } from "@/components/i18n";
 import { setTheme } from "@/components/theme-toggle";
 import { LOCALES } from "@/lib/i18n";
 import {
+  changePassword,
   disconnectTelegram,
   joinGroup,
   removeCanvas,
@@ -17,6 +18,7 @@ import {
   saveCanvas,
   savePrefs,
   setLocale,
+  signOutEverywhere,
   telegramLink,
   telegramTest,
 } from "../actions";
@@ -290,5 +292,40 @@ export function Appearance() {
         <LogOut size={16} /> {t.common.logout}
       </Button>
     </div>
+  );
+}
+
+/** Change password: current, new, repeat. The form clears after a successful change. */
+export function PasswordForm() {
+  const { t } = useT();
+  const [pending, run] = useAction();
+  const [key, setKey] = useState(0);
+  return (
+    <form key={key} action={(fd) => run(() => changePassword(fd), () => setKey((k) => k + 1))} className="grid gap-3 sm:grid-cols-2">
+      <Field label={t.profile.currentPassword} className="sm:col-span-2">
+        <Input name="current" type="password" required autoComplete="current-password" />
+      </Field>
+      <Field label={t.profile.newPassword} hint={t.profile.passwordRule}>
+        <Input name="next" type="password" required minLength={8} autoComplete="new-password" />
+      </Field>
+      <Field label={t.profile.repeatPassword}>
+        <Input name="repeat" type="password" required minLength={8} autoComplete="new-password" />
+      </Field>
+      <div className="sm:col-span-2">
+        <Button type="submit" disabled={pending}>
+          <KeyRound size={16} /> {t.profile.changePassword}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+export function SignOutEverywhere() {
+  const { t } = useT();
+  const [pending, run] = useAction();
+  return (
+    <Button variant="outline" size="sm" disabled={pending} onClick={() => run(() => signOutEverywhere())}>
+      <MonitorSmartphone size={14} /> {t.profile.logoutEverywhere}
+    </Button>
   );
 }

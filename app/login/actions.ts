@@ -2,68 +2,67 @@
 
 import bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
-import { emailAllowed, endSession, homeFor, isDemo, safeNext, startSession } from "@/lib/auth";
-import { DEMO_ADVISOR, DEMO_STUDENT, DEMO_TEACHER } from "@/lib/db/seed";
+import { emailAllowed, endSession, homeFor, safeNext, startSession } from "@/lib/auth";
 import { dictionaries, isLocale } from "@/lib/i18n";
-import { logEvent } from "@/lib/reminders/engine";
 import { sendEmail } from "@/lib/notifications/channels";
 import { appUrl } from "@/lib/telegram/api";
+import { LOCK_MIN, MAX_FAILS, loginGuard, recordAttempt } from "@/lib/security";
 
-export type AuthState = { error?: string; info?: string } | undefined;
+/** email: what was typed, so a failed attempt doesn't wipe it from the form. */
+export type AuthState = { error?: string; info?: string; email?: string } | undefined;
 
 async function dict() {
   const c = (await cookies()).get("locale")?.value;
   return dictionaries[isLocale(c) ? c : "ru"];
 }
 
-/** Where to go after signing in: back to the page that asked for it (e.g. a QR check-in), else the role's home. */
+/**
+ * Accounts are issued by the university (lib/db/accounts.ts): there is no sign-up.
+ * Where to go after signing in: back to the page that asked for it (e.g. a QR check-in), else the role's home.
+ */
 const home = (role: string, form?: FormData) => safeNext(form?.get("next")) ?? homeFor(role);
 
+// Compared against when the email is unknown, so a wrong email takes as long as a wrong password.
+let dummy: string | undefined;
+const dummyHash = () => (dummy ??= bcrypt.hashSync("unios-not-a-password", 8));
+
+/**
+ * Email + password. After MAX_FAILS wrong passwords the email is locked for LOCK_MIN minutes (an address that
+ * keeps failing gets locked too); the last two attempts are counted down. Blocked accounts can't sign in.
+ */
 export async function signIn(_: AuthState, form: FormData): Promise<AuthState> {
   const t = await dict();
-  const email = String(form.get("email") ?? "").trim().toLowerCase();
-  const password = String(form.get("password") ?? "");
+  const email = String(form.get("email") ?? "").trim().toLowerCase().slice(0, 200);
+  const password = String(form.get("password") ?? "").slice(0, 200);
+  const h = await headers();
+  const ip = (h.get("x-forwarded-for")?.split(",")[0] || h.get("x-real-ip") || "").trim();
+  const userAgent = h.get("user-agent") ?? "";
   const d = await db();
-  const [u] = await d.q<{ id: string; role: string; password_hash: string | null }>(
-    `select id, role, password_hash from profiles where email = $1`,
+  const guard = await loginGuard(d.q, email, ip);
+  if (guard.locked) return { error: t.auth.locked(guard.retryInMin), email };
+  const [u] = await d.q<{ id: string; role: string; password_hash: string | null; disabled_at: Date | null }>(
+    `select id, role, password_hash, disabled_at from profiles where email = $1`,
     [email],
   );
-  if (!u?.password_hash || !(await bcrypt.compare(password, u.password_hash))) return { error: t.auth.wrong };
+  const ok = await bcrypt.compare(password, u?.password_hash ?? dummyHash());
+  if (!u || !ok) {
+    await recordAttempt(d.q, { email, ip, userAgent, ok: false });
+    const left = MAX_FAILS - guard.emailFails - 1;
+    return { error: left <= 0 ? t.auth.locked(LOCK_MIN) : left <= 2 ? t.auth.wrongLeft(left) : t.auth.wrong, email };
+  }
+  if (u.disabled_at) return { error: t.auth.blocked, email };
+  await recordAttempt(d.q, { email, ip, userAgent, ok: true });
   await startSession(u.id);
   redirect(home(u.role, form));
 }
 
-export async function signUp(_: AuthState, form: FormData): Promise<AuthState> {
-  const t = await dict();
-  const email = String(form.get("email") ?? "").trim().toLowerCase();
-  const password = String(form.get("password") ?? "");
-  const name = String(form.get("name") ?? "").trim() || email.split("@")[0];
-  const code = String(form.get("teacher_code") ?? "").trim();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { error: t.auth.wrong };
-  if (!emailAllowed(email)) return { error: t.auth.domain };
-  if (password.length < 8) return { error: t.auth.short };
-  const teacherCode = process.env.TEACHER_CODE || (isDemo() ? "NARXOZ-TEACHER" : "");
-  if (code && code !== teacherCode) return { error: t.auth.badCode };
-  const role = code ? "teacher" : "student";
-  const c = (await cookies()).get("locale")?.value;
-  const d = await db();
-  const rows = await d.q<{ id: string }>(
-    `insert into profiles (email, full_name, role, password_hash, locale) values ($1, $2, $3, $4, $5)
-     on conflict (email) do nothing returning id`,
-    [email, name.slice(0, 120), role, await bcrypt.hash(password, 10), isLocale(c) ? c : "ru"],
-  );
-  if (!rows[0]) return { error: t.auth.exists };
-  await d.q(`insert into notification_prefs (user_id) values ($1) on conflict do nothing`, [rows[0].id]);
-  await logEvent(d.q, rows[0].id, "signup", { role });
-  await startSession(rows[0].id);
-  redirect(home(role, form));
-}
-
+/** Sign-in link by email; only offered when email sending (Resend) is configured. */
 export async function sendMagicLink(_: AuthState, form: FormData): Promise<AuthState> {
   const t = await dict();
+  if (!process.env.RESEND_API_KEY) return { error: t.common.error };
   const email = String(form.get("email") ?? "").trim().toLowerCase();
   if (!emailAllowed(email)) return { error: t.auth.domain };
   const d = await db();
@@ -73,31 +72,12 @@ export async function sendMagicLink(_: AuthState, form: FormData): Promise<AuthS
     const token = randomBytes(24).toString("base64url");
     await d.q(`insert into magic_links (token, email, expires_at) values ($1, $2, now() + interval '15 minutes')`, [token, email]);
     const link = `${appUrl()}/api/auth/magic?token=${token}`;
-    if (process.env.RESEND_API_KEY) {
-      await sendEmail(email, "UniOS — вход", `${t.auth.title}: ${link}\n\n15 min.`).catch((e) => console.error(e));
-    } else {
-      console.log(`\n[UniOS] Magic link for ${email}: ${link}\n`);
-      return { info: t.auth.magicDev };
-    }
+    await sendEmail(email, "UniOS — вход", `${t.auth.title}: ${link}\n\n15 min.`).catch((e) => console.error(e));
   }
   return { info: t.auth.magicSent };
-}
-
-export async function demoSignIn(role: "student" | "teacher" | "advisor", next?: string) {
-  if (!isDemo()) return;
-  const d = await db();
-  const email = role === "teacher" ? DEMO_TEACHER : role === "advisor" ? DEMO_ADVISOR : DEMO_STUDENT;
-  const [u] = await d.q<{ id: string }>(`select id from profiles where email = $1`, [email]);
-  if (!u) return;
-  await startSession(u.id);
-  redirect(safeNext(next) ?? homeFor(role));
 }
 
 export async function signOut() {
   await endSession();
   redirect("/login");
-}
-
-export async function setGuestLocale(locale: string) {
-  if (isLocale(locale)) (await cookies()).set("locale", locale, { path: "/", maxAge: 60 * 60 * 24 * 365 });
 }

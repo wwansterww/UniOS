@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Db } from "../lib/db/core";
-import { seed, DEMO_STUDENT, DEMO_TEACHER } from "../lib/db/seed";
+import { seed, MAIN_STUDENT, MAIN_TEACHER } from "../lib/db/seed";
 import { markDone, recomputeForDeadline, recomputeForStudent, snooze } from "../lib/reminders/engine";
 import { dispatchReminders, dispatchNotifications } from "../lib/reminders/dispatch";
 import { notify } from "../lib/notifications/notify";
@@ -42,11 +42,11 @@ function fakeSenders() {
 
 beforeAll(async () => {
   db = await createDb(undefined, null);
-  await db.tx((q) => seed(q, NOW));
+  await db.tx((q) => seed(q, NOW, () => "test-password"));
   const one = async (sql: string, p: unknown[] = []) => (await db.q<{ id: string }>(sql, p))[0].id;
-  student = await one(`select id from profiles where email = $1`, [DEMO_STUDENT]);
-  teacher = await one(`select id from profiles where email = $1`, [DEMO_TEACHER]);
-  otherTeacher = await one(`select id from profiles where email = 'teacher2@narxoz.kz'`);
+  student = await one(`select id from profiles where email = $1`, [MAIN_STUDENT]);
+  teacher = await one(`select id from profiles where email = $1`, [MAIN_TEACHER]);
+  otherTeacher = await one(`select id from profiles where email = 'b.omarov@narxoz.kz'`);
   groupIS = await one(`select id from groups where invite_code = 'IS231'`);
   courseDb = await one(`select id from courses where code = 'CSE 341'`);
   courseMicro = await one(`select id from courses where code = 'MKT 305'`);
@@ -145,6 +145,15 @@ describe("reminders in the database", () => {
   });
 });
 
+describe("accounts", () => {
+  it("only the university's accounts exist: 5 teachers, 10 students, 1 advisor", async () => {
+    const roles = await db.q<{ role: string; n: number }>(`select role, count(*)::int as n from profiles group by role order by role`);
+    expect(Object.fromEntries(roles.map((r) => [r.role, r.n]))).toEqual({ advisor: 1, student: 10, teacher: 5 });
+    const [{ n }] = await db.q<{ n: number }>(`select count(*)::int as n from profiles where email not like '%@narxoz.kz' or password_hash is null`);
+    expect(n).toBe(0);
+  });
+});
+
 describe("row level security", () => {
   it("student sees only courses of their groups", async () => {
     const courses = await asUser(student, (q) => q<{ code: string }>(`select code from courses where term = '2026-2' order by code`));
@@ -157,7 +166,7 @@ describe("row level security", () => {
   });
 
   it("student cannot see other students' personal tasks, reminders or notifications", async () => {
-    const other = (await db.q<{ id: string }>(`select id from profiles where email = 's1@narxoz.kz'`))[0].id;
+    const other = (await db.q<{ id: string }>(`select id from profiles where email = 'a.serikova@narxoz.kz'`))[0].id;
     const tasks = await asUser(other, (q) => q(`select * from deadlines where owner_id = $1`, [student]));
     expect(tasks).toHaveLength(0);
     expect(await asUser(other, (q) => q(`select * from reminders where student_id = $1`, [student]))).toHaveLength(0);
@@ -166,14 +175,14 @@ describe("row level security", () => {
 
   it("teacher sees only their own courses", async () => {
     const mine = await asUser(teacher, (q) => q<{ code: string }>(`select code from courses order by code`));
-    expect(mine.map((c) => c.code)).toEqual(["CSE 341", "CSE 352", "MGT 410"]);
+    expect(mine.map((c) => c.code)).toEqual(["CSE 341", "CSE 352"]);
     const other = await asUser(otherTeacher, (q) => q<{ id: string }>(`select id from courses`));
     expect(other.map((c) => c.id)).toContain(courseMicro);
     expect(other.map((c) => c.id)).not.toContain(courseDb);
   });
 
   it("student sees only their own grades and attendance; teacher only their courses", async () => {
-    const other = (await db.q<{ id: string }>(`select id from profiles where email = 's1@narxoz.kz'`))[0].id;
+    const other = (await db.q<{ id: string }>(`select id from profiles where email = 'a.serikova@narxoz.kz'`))[0].id;
     const mine = await asUser(student, (q) => q<{ student_id: string }>(`select student_id from grades`));
     expect(mine.length).toBeGreaterThan(0);
     expect(mine.every((g) => g.student_id === student)).toBe(true);
@@ -191,11 +200,11 @@ describe("row level security", () => {
   });
 
   it("advisor sees students of their groups; certificates are visible to the student, the teacher and the advisor only", async () => {
-    const advisor = (await db.q<{ id: string }>(`select id from profiles where email = 'advisor@narxoz.kz'`))[0].id;
+    const advisor = (await db.q<{ id: string }>(`select id from profiles where email = 'g.seitova@narxoz.kz'`))[0].id;
     const seen = await asUser(advisor, (q) => q<{ n: number }>(`select count(distinct student_id)::int as n from grades`));
-    expect(seen[0].n).toBe(35); // both groups
+    expect(seen[0].n).toBe(10); // both groups
     expect((await asUser(advisor, (q) => q(`select * from attendance where student_id = $1`, [student]))).length).toBeGreaterThan(0);
-    const other = (await db.q<{ id: string }>(`select id from profiles where email = 's1@narxoz.kz'`))[0].id;
+    const other = (await db.q<{ id: string }>(`select id from profiles where email = 'a.serikova@narxoz.kz'`))[0].id;
     expect(await asUser(other, (q) => q(`select * from excuses where student_id = $1`, [student]))).toHaveLength(0);
     expect((await asUser(student, (q) => q(`select * from excuses where student_id = $1`, [student]))).length).toBeGreaterThan(0);
     expect((await asUser(advisor, (q) => q(`select * from excuses`))).length).toBeGreaterThan(0);

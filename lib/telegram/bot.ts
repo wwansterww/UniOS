@@ -156,6 +156,9 @@ async function handleCallback(db: Db, cb: NonNullable<Update["callback_query"]>,
   if (!deadlineId || !/^[0-9a-f-]{36}$/.test(deadlineId) || !(await canSee(db, p.id, deadlineId))) return io.answer(cb.id, t.bot.unknown);
 
   if (action === "done") {
+    // Work handed in as files is done by uploading on the site, not by a button.
+    const [dl] = await db.q<{ files: boolean }>(`select file_types is not null as files from deadlines where id = $1`, [deadlineId]);
+    if (dl?.files) return io.answer(cb.id, t.bot.needsFile);
     await db.tx(async (q) => {
       await markDone(q, p.id, deadlineId, now);
       await q(`update reminders set opened_at = coalesce(opened_at, $3) where student_id = $1 and deadline_id = $2 and sent_at is not null`, [
@@ -298,8 +301,8 @@ async function week(db: Db, p: Profile, t: Dict, now: Date) {
 
 async function deadlines(db: Db, p: Profile, t: Dict, now: Date, until = new Date(now.getTime() + 14 * DAY)): Promise<[string, InlineButton[][]]> {
   const l = lang(p);
-  const rows = await db.q<{ id: string; title: string; due_at: Date; course: string | null }>(
-    `select d.id, d.title, d.due_at, c.title as course from deadlines d left join courses c on c.id = d.course_id
+  const rows = await db.q<{ id: string; title: string; due_at: Date; course: string | null; files: boolean }>(
+    `select d.id, d.title, d.due_at, c.title as course, d.file_types is not null as files from deadlines d left join courses c on c.id = d.course_id
       where d.deleted_at is null and d.due_at > $2 and d.due_at < $3
         and not exists (select 1 from deadline_status ds where ds.deadline_id = d.id and ds.student_id = $1)
         and (d.owner_id = $1 or exists (select 1 from deadline_groups dg join group_members gm on gm.group_id = dg.group_id
@@ -312,7 +315,10 @@ async function deadlines(db: Db, p: Profile, t: Dict, now: Date, until = new Dat
     `<b>${t.bot.deadlinesTitle}</b>`,
     ...rows.map((d) => `\n<b>${esc(d.title)}</b>\n${d.course ? `${esc(d.course)} · ` : ""}${esc(relative(t, l, new Date(d.due_at), now))}`),
   ].join("\n");
-  const buttons = rows.slice(0, 5).map((d) => [{ text: `✓ ${d.title.slice(0, 34)}`, callback_data: `done:${d.id}` }]);
+  const buttons = rows
+    .filter((d) => !d.files)
+    .slice(0, 5)
+    .map((d) => [{ text: `✓ ${d.title.slice(0, 34)}`, callback_data: `done:${d.id}` }]);
   return [text, buttons];
 }
 

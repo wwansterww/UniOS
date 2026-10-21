@@ -20,13 +20,18 @@ interface DueReminder {
   deleted_at: Date | null;
   course_title: string | null;
   done: boolean;
+  files: boolean;
   chat_id: string | null;
   email: string;
   locale: string;
   channels: string[] | null;
 }
 
-export function reminderTelegram(r: { id: string; deadline_id: string; kind: string; title: string; course_title: string | null; due_at: Date }, locale: Locale, now: Date) {
+export function reminderTelegram(
+  r: { id: string; deadline_id: string; kind: string; title: string; course_title: string | null; due_at: Date; files?: boolean },
+  locale: Locale,
+  now: Date,
+) {
   const t = dictionaries[locale];
   const due = new Date(r.due_at);
   const head = r.kind === "urgent" ? t.bot.urgent : t.bot.reminder;
@@ -35,9 +40,10 @@ export function reminderTelegram(r: { id: string; deadline_id: string; kind: str
     `<b>${esc(r.title)}</b>`,
     `${esc(r.course_title ?? t.common.personal)} · ${esc(formatDateTime(due, locale))}`,
   ].join("\n");
+  // Work handed in as files can't be ticked off from Telegram: only "later" and the link to the site.
   const buttons: InlineButton[][] = [
     [
-      { text: t.bot.done, callback_data: `done:${r.deadline_id}` },
+      ...(r.files ? [] : [{ text: t.bot.done, callback_data: `done:${r.deadline_id}` }]),
       { text: t.bot.snooze, callback_data: `snooze:${r.deadline_id}` },
     ],
   ];
@@ -55,7 +61,7 @@ export async function dispatchReminders(db: Db, senders: Senders, now = new Date
   await db.tx(async (q) => {
     const rows = await q<DueReminder>(
       `select r.id, r.student_id, r.deadline_id, r.kind, r.attempts, d.title, d.due_at, d.deleted_at,
-              c.title as course_title, (ds.student_id is not null) as done,
+              c.title as course_title, (ds.student_id is not null) as done, (d.file_types is not null) as files,
               p.telegram_chat_id::text as chat_id, p.email, p.locale, np.channels
          from reminders r
          join deadlines d on d.id = r.deadline_id

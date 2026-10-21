@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Db } from "../lib/db/core";
-import { seed, DEMO_STUDENT } from "../lib/db/seed";
+import { seed, MAIN_STUDENT } from "../lib/db/seed";
 import { handleUpdate, type BotIO } from "../lib/telegram/bot";
 import { importCanvasEvents } from "../lib/canvas";
 import { buildIcs, parseIcs } from "../lib/ics";
@@ -26,8 +26,8 @@ function fakeIO() {
 
 beforeAll(async () => {
   db = await createDb(undefined, null);
-  await db.tx((q) => seed(q, NOW));
-  student = (await db.q<{ id: string }>(`select id from profiles where email = $1`, [DEMO_STUDENT]))[0].id;
+  await db.tx((q) => seed(q, NOW, () => "test-password"));
+  student = (await db.q<{ id: string }>(`select id from profiles where email = $1`, [MAIN_STUDENT]))[0].id;
 });
 
 describe("telegram bot", () => {

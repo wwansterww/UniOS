@@ -2,7 +2,7 @@
 
 import { useEffect, useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
-import { Check } from "lucide-react";
+import { Check, Paperclip } from "lucide-react";
 import { toast } from "sonner";
 import { useT } from "./i18n";
 import { CourseDot, cn } from "./ui";
@@ -37,11 +37,11 @@ export function Countdown({ to, wrap, className }: { to: string; wrap?: Wrap; cl
 }
 
 /** Relative due time as quiet text: red only when it is urgent or overdue. */
-export function DueBadge({ due, done }: { due: string; done?: boolean }) {
+export function DueBadge({ due, done, doneLabel }: { due: string; done?: boolean; doneLabel?: string }) {
   const { t, locale } = useT();
   const now = useNow();
   const d = new Date(due);
-  if (done) return <span className="rounded-full bg-ok-soft px-2.5 py-1 text-xs font-medium text-ok">{t.deadlines.done}</span>;
+  if (done) return <span className="rounded-full bg-ok-soft px-2.5 py-1 text-xs font-medium text-ok">{doneLabel ?? t.deadlines.done}</span>;
   const u = urgency(d, now);
   return (
     <span
@@ -69,6 +69,8 @@ export interface DeadlineItemData {
   done: boolean;
   source?: string;
   link?: string | null;
+  /** Handed in as files: done means uploaded, so the circle leads to the upload instead of ticking. */
+  files?: boolean;
 }
 
 export function DeadlineItem({ d, compact }: { d: DeadlineItemData; compact?: boolean }) {
@@ -92,18 +94,32 @@ export function DeadlineItem({ d, compact }: { d: DeadlineItemData; compact?: bo
 
   return (
     <div className="spotlight lift group flex items-center gap-4 rounded-2xl border border-border bg-surface px-4 py-3.5 shadow-card sm:px-5">
-      <button
-        onClick={toggle}
-        disabled={pending}
-        aria-pressed={done}
-        aria-label={done ? t.deadlines.undo : t.deadlines.markDone}
-        className={cn(
-          "grid h-5 w-5 shrink-0 place-items-center rounded-full border-[1.5px] transition-colors",
-          done ? "border-ok bg-ok text-white" : "border-fg/25 hover:border-accent hover:bg-accent-soft",
-        )}
-      >
-        {done && <Check size={12} strokeWidth={3} />}
-      </button>
+      {d.files ? (
+        <Link
+          href={`/deadlines/${d.id}#submit`}
+          aria-label={done ? t.submit.handedIn : t.submit.upload}
+          title={done ? t.submit.handedIn : t.submit.needsFile}
+          className={cn(
+            "grid h-5 w-5 shrink-0 place-items-center rounded-full border-[1.5px] transition-colors",
+            done ? "border-ok bg-ok text-white" : "border-dashed border-fg/30 text-muted hover:border-accent hover:bg-accent-soft hover:text-accent",
+          )}
+        >
+          {done ? <Check size={12} strokeWidth={3} /> : <Paperclip size={10} strokeWidth={2.5} />}
+        </Link>
+      ) : (
+        <button
+          onClick={toggle}
+          disabled={pending}
+          aria-pressed={done}
+          aria-label={done ? t.deadlines.undo : t.deadlines.markDone}
+          className={cn(
+            "grid h-5 w-5 shrink-0 place-items-center rounded-full border-[1.5px] transition-colors",
+            done ? "border-ok bg-ok text-white" : "border-fg/25 hover:border-accent hover:bg-accent-soft",
+          )}
+        >
+          {done && <Check size={12} strokeWidth={3} />}
+        </button>
+      )}
       <Link href={`/deadlines/${d.id}`} className="min-w-0 flex-1">
         <span className={cn("block truncate text-[15px] font-medium", done && "text-muted line-through")}>{d.title}</span>
         <span className="mt-0.5 flex items-center gap-1.5 text-[13px] text-muted" suppressHydrationWarning>
@@ -115,7 +131,7 @@ export function DeadlineItem({ d, compact }: { d: DeadlineItemData; compact?: bo
           </span>
         </span>
       </Link>
-      <DueBadge due={d.due_at} done={done} />
+      <DueBadge due={d.due_at} done={done} doneLabel={d.files ? t.submit.handedIn : undefined} />
     </div>
   );
 }

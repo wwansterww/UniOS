@@ -43,3 +43,7 @@ next-env.d.ts
 # local database
 /.data
 !.env.example
+
+# account passwords (lib/db/accounts.ts)
+/accounts.local.json
+/ACCOUNTS.local.md
