@@ -1,4 +1,5 @@
 import "server-only";
+import { appSecret } from "./secret";
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
@@ -21,12 +22,7 @@ export interface User {
 const COOKIE = "uni_session";
 const MAX_AGE = 60 * 60 * 24 * 30;
 
-function secret() {
-  const s = process.env.AUTH_SECRET;
-  if (!s && process.env.NODE_ENV === "production" && process.env.DEMO_MODE === "false")
-    throw new Error("AUTH_SECRET must be set in production");
-  return new TextEncoder().encode(s || "uni-dev-secret-change-me-please-32chars");
-}
+const secret = () => new TextEncoder().encode(appSecret());
 
 export const isDemo = () => process.env.DEMO_MODE !== "false";
 export const allowedDomain = () => process.env.ALLOWED_EMAIL_DOMAIN || "narxoz.kz";

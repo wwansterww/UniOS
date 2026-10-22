@@ -402,7 +402,12 @@ export async function configureBot() {
 
 /** Long polling for local development (no public URL needed for a webhook). */
 export async function pollUpdates(db: Db, signal: AbortSignal) {
-  await tg("deleteWebhook", {}).catch(() => {});
+  // A webhook means the bot already answers on the deployed site: don't take it away from there.
+  const hook = await tg<{ url: string }>("getWebhookInfo", {}).catch(() => null);
+  if (hook?.url) {
+    console.log(`[telegram] the bot answers via webhook at ${hook.url}; local polling is off (deleteWebhook to bring it back here)`);
+    return;
+  }
   let offset = 0;
   while (!signal.aborted) {
     try {

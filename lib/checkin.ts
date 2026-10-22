@@ -1,12 +1,13 @@
 import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { appSecret } from "./secret";
 
 /** QR check-in: a 6-digit code per class that changes every 15 seconds; only the server can make it. */
 export const CHECKIN_WINDOW_MS = 15_000;
 /** Marks after this many minutes from the start count as late. */
 export const LATE_AFTER_MIN = 15;
 
-const secret = () => process.env.AUTH_SECRET || "uni-dev-secret-change-me-please-32chars";
+const secret = appSecret;
 
 export const checkinWindow = (now = Date.now()) => Math.floor(now / CHECKIN_WINDOW_MS);
 

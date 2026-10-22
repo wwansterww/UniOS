@@ -13,7 +13,8 @@
     "db:migrate": "tsx --env-file-if-exists=.env.local --env-file-if-exists=.env.supabase scripts/db.ts migrate",
     "db:reset": "tsx scripts/db.ts reset",
     "telegram:webhook": "tsx --env-file-if-exists=.env.local scripts/telegram-webhook.ts",
-    "telegram:setup": "tsx --env-file-if-exists=.env.local scripts/telegram-setup.ts"
+    "telegram:setup": "tsx --env-file-if-exists=.env.local scripts/telegram-setup.ts",
+    "demo:reset": "tsx --env-file-if-exists=.env.local --env-file-if-exists=.env.supabase scripts/db.ts demo-reset"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.10",
