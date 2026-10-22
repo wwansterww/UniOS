@@ -10,6 +10,7 @@ import { dictionaries, isLocale } from "@/lib/i18n";
 import { sendEmail } from "@/lib/notifications/channels";
 import { appUrl } from "@/lib/telegram/api";
 import { LOCK_MIN, MAX_FAILS, loginGuard, recordAttempt } from "@/lib/security";
+import { tokenHash } from "@/lib/secret";
 
 /** email: what was typed, so a failed attempt doesn't wipe it from the form. */
 export type AuthState = { error?: string; info?: string; email?: string } | undefined;
@@ -60,6 +61,9 @@ export async function signIn(_: AuthState, form: FormData): Promise<AuthState> {
 }
 
 /** Sign-in link by email; only offered when email sending (Resend) is configured. */
+/** Sign-in links one address may receive per 15 minutes. */
+const MAGIC_PER_WINDOW = 3;
+
 export async function sendMagicLink(_: AuthState, form: FormData): Promise<AuthState> {
   const t = await dict();
   if (!process.env.RESEND_API_KEY) return { error: t.common.error };
@@ -68,9 +72,15 @@ export async function sendMagicLink(_: AuthState, form: FormData): Promise<AuthS
   const d = await db();
   const [u] = await d.q(`select id from profiles where email = $1`, [email]);
   // Same answer whether or not the account exists.
-  if (u) {
+  // At most MAGIC_PER_WINDOW links per address per 15 minutes, so the form can't be used to flood someone's inbox.
+  const [{ n }] = await d.q<{ n: number }>(
+    `select count(*)::int as n from magic_links where email = $1 and expires_at > now()`,
+    [email],
+  );
+  if (u && n < MAGIC_PER_WINDOW) {
     const token = randomBytes(24).toString("base64url");
-    await d.q(`insert into magic_links (token, email, expires_at) values ($1, $2, now() + interval '15 minutes')`, [token, email]);
+    // Only the hash is stored: a leaked table must not contain working sign-in links.
+    await d.q(`insert into magic_links (token, email, expires_at) values ($1, $2, now() + interval '15 minutes')`, [tokenHash(token), email]);
     const link = `${appUrl()}/api/auth/magic?token=${token}`;
     await sendEmail(email, "UniOS — вход", `${t.auth.title}: ${link}\n\n15 min.`).catch((e) => console.error(e));
   }

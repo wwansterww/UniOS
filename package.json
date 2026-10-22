@@ -14,7 +14,8 @@
     "db:reset": "tsx scripts/db.ts reset",
     "telegram:webhook": "tsx --env-file-if-exists=.env.local scripts/telegram-webhook.ts",
     "telegram:setup": "tsx --env-file-if-exists=.env.local scripts/telegram-setup.ts",
-    "demo:reset": "tsx --env-file-if-exists=.env.local --env-file-if-exists=.env.supabase scripts/db.ts demo-reset"
+    "demo:reset": "tsx --env-file-if-exists=.env.local --env-file-if-exists=.env.supabase scripts/db.ts demo-reset",
+    "check": "npm run lint && next typegen && npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.10",
@@ -44,5 +45,8 @@
     "tsx": "^4.23.15",
     "typescript": "^5",
     "vitest": "^4.1.12"
+  },
+  "engines": {
+    "node": ">=20.9"
   }
 }

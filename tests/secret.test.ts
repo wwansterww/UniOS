@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { appSecret } from "../lib/secret";
+import { appSecret, safeEqual, tokenHash } from "../lib/secret";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -26,5 +26,26 @@ describe("appSecret", () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("AUTH_SECRET", "");
     expect(appSecret()).toBe("uni-dev-secret-change-me-please-32chars");
+  });
+});
+
+describe("safeEqual and tokenHash", () => {
+  it("matches only the exact secret", () => {
+    expect(safeEqual("s3cret-value", "s3cret-value")).toBe(true);
+    expect(safeEqual("s3cret-valuE", "s3cret-value")).toBe(false);
+    expect(safeEqual("s3cret", "s3cret-value")).toBe(false);
+  });
+
+  it("never matches when either side is missing", () => {
+    expect(safeEqual(null, "x")).toBe(false);
+    expect(safeEqual("x", undefined)).toBe(false);
+    expect(safeEqual("", "")).toBe(false);
+  });
+
+  it("stores tokens one-way: same input, same hash, no token inside", () => {
+    const token = "abcDEF123_-xyz";
+    expect(tokenHash(token)).toBe(tokenHash(token));
+    expect(tokenHash(token)).not.toContain(token);
+    expect(tokenHash(token)).not.toBe(tokenHash(token + "1"));
   });
 });

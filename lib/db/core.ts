@@ -86,11 +86,18 @@ async function migrate(d: Db) {
   for (const m of migrations) {
     if (done.has(m.name)) continue;
     await d.tx(async (q) => {
+      // Several serverless instances can cold-start at once: one applies the migration, the others wait for it
+      // here and then skip it, instead of failing on the duplicate _migrations row.
+      await q(`select pg_advisory_xact_lock(${MIGRATION_LOCK})`);
+      if ((await q(`select 1 from _migrations where name = $1`, [m.name])).length) return;
       for (const stmt of splitSql(m.sql)) await q(stmt);
       await q(`insert into _migrations (name) values ($1)`, [m.name]);
     });
   }
 }
+
+/** Advisory lock key that serialises migrations across processes ("UNIOS" in ASCII). */
+const MIGRATION_LOCK = 0x554e494f53;
 
 /** Splits a migration into statements, keeping $$-quoted bodies intact. */
 export function splitSql(sql: string): string[] {

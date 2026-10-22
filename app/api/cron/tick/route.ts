@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { safeEqual } from "@/lib/secret";
 import { db } from "@/lib/db";
 import { runTick } from "@/lib/jobs";
 
@@ -9,7 +10,8 @@ import { runTick } from "@/lib/jobs";
 async function handle(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
   const auth = req.headers.get("authorization");
-  if (!secret || auth !== `Bearer ${secret}`) return new NextResponse(null, { status: 401 });
+  const given = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!safeEqual(given, secret)) return new NextResponse(null, { status: 401 });
   const result = await runTick(await db());
   return NextResponse.json(result);
 }

@@ -3,6 +3,15 @@ import type { Dict } from "./ru";
 const s = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 const en: Dict = {
+  errors: {
+    title: "Something went wrong",
+    text: "The page didn't load. Try again — that usually helps.",
+    retry: "Try again",
+    home: "Go home",
+    code: "Error code",
+    nfTitle: "Page not found",
+    nfText: "The link may be outdated, or the page was removed.",
+  },
   app: { name: "UniOS", tagline: "Narxoz schedule, deadlines and announcements — in one place" },
   nav: {
     today: "Today",
