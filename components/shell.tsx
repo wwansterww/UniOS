@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bell, BookOpen, CalendarDays, ClipboardList, GraduationCap, Home, KeyRound, LayoutDashboard, Megaphone, Search, UserCheck, Users } from "lucide-react";
+import { Bell, BookOpen, CalendarDays, ClipboardList, GraduationCap, Home, Inbox, KeyRound, LayoutDashboard, Megaphone, Search, UserCheck, Users } from "lucide-react";
 import { NarxozLogo } from "./logo";
 import { cn } from "./ui";
 import { useT } from "./i18n";
@@ -38,6 +38,7 @@ const teacherNav: Item[] = [
 
 const advisorNav: Item[] = [
   { href: "/advisor", label: (t) => t.nav.students, icon: Users, desktop: true, mobile: true },
+  { href: "/advisor/applications", label: (t) => t.nav.applications, icon: Inbox, desktop: true, mobile: true },
   { href: "/advisor/accounts", label: (t) => t.nav.accounts, icon: KeyRound, desktop: true, mobile: true },
 ];
 
@@ -45,11 +46,14 @@ export function Shell({
   role,
   name,
   unread,
+  counts = {},
   children,
 }: {
   role: "student" | "teacher" | "advisor";
   name: string;
   unread: number;
+  /** Things waiting in a section (e.g. teachers' applications), shown next to its name. */
+  counts?: Record<string, number>;
   children: React.ReactNode;
 }) {
   const { t, locale } = useT();
@@ -90,6 +94,11 @@ export function Shell({
                   )}
                 >
                   {i.label(t)}
+                  {counts[i.href] > 0 && (
+                    <span className="ml-1.5 inline-grid min-w-5 place-items-center rounded-full bg-accent px-1.5 text-[11px] font-semibold leading-5 text-accent-fg tabular-nums">
+                      {counts[i.href]}
+                    </span>
+                  )}
                   {active(i.href) && <span className="absolute inset-x-3 -bottom-[13px] h-0.5 rounded-full bg-accent" aria-hidden />}
                 </Link>
               ))}
@@ -131,7 +140,14 @@ export function Shell({
                 aria-current={active(i.href) ? "page" : undefined}
                 className={cn("flex min-w-0 flex-auto flex-col items-center gap-1 pb-2 pt-2.5 text-[10.5px]", active(i.href) ? "font-medium text-fg" : "text-muted")}
               >
-                <i.icon size={20} strokeWidth={active(i.href) ? 2.2 : 1.8} />
+                <span className="relative">
+                  <i.icon size={20} strokeWidth={active(i.href) ? 2.2 : 1.8} />
+                  {counts[i.href] > 0 && (
+                    <span className="absolute -right-2 -top-1.5 grid min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold leading-4 text-accent-fg ring-2 ring-bg">
+                      {counts[i.href]}
+                    </span>
+                  )}
+                </span>
                 <span className="max-w-full truncate px-0.5">{i.label(t)}</span>
               </Link>
             ))}

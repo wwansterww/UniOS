@@ -144,7 +144,7 @@ async function handleCallback(db: Db, cb: NonNullable<Update["callback_query"]>,
   if (!p) return io.answer(cb.id, t.bot.unknown);
 
   if (action === "pref") {
-    await togglePref(db, p, arg);
+    await togglePref(db, p, arg, now);
     if (cb.message) {
       const [html, buttons] = await settings(db, p, t);
       await io.edit(cb.message.chat.id, cb.message.message_id, html, buttons).catch(() => {});
@@ -200,7 +200,7 @@ async function loadPrefs(db: Db, userId: string): Promise<Prefs> {
   return p;
 }
 
-async function togglePref(db: Db, p: Profile, what: string) {
+async function togglePref(db: Db, p: Profile, what: string, now: Date) {
   const prefs = await loadPrefs(db, p.id);
   await db.tx(async (q) => {
     const offset = Number(what);
@@ -210,10 +210,10 @@ async function togglePref(db: Db, p: Profile, what: string) {
         p.id,
         next.join(","),
       ]);
-      if (p.role === "student") await recomputeForStudent(q, p.id);
+      if (p.role === "student") await recomputeForStudent(q, p.id, now);
     } else if (what === "all") {
       await q(`update notification_prefs set offsets_minutes = $2::int[] where user_id = $1`, [p.id, `{${OFFSET_CHOICES.join(",")}}`]);
-      if (p.role === "student") await recomputeForStudent(q, p.id);
+      if (p.role === "student") await recomputeForStudent(q, p.id, now);
     } else if (what === "digest") {
       await q(`update notification_prefs set digest_enabled = not digest_enabled where user_id = $1`, [p.id]);
     } else if (what === "instant") {

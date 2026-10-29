@@ -2,11 +2,16 @@
 
 import bcrypt from "bcryptjs";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { db, type Q } from "@/lib/db";
 import { allowedDomain, requireUser } from "@/lib/auth";
-import { dictionaries } from "@/lib/i18n";
+import { dictionaries, isLocale } from "@/lib/i18n";
 import { newPassword } from "@/lib/db/accounts";
+import { approveApplication, rejectApplication } from "@/lib/db/applications";
 import { logEvent, recomputeForStudent } from "@/lib/reminders/engine";
+import { notify } from "@/lib/notifications/notify";
+import { sendEmail } from "@/lib/notifications/channels";
+import { appUrl } from "@/lib/telegram/api";
 import type { Result } from "../actions";
 
 /** password: a temporary password, shown to the advisor once. */
@@ -15,7 +20,7 @@ export type TempResult = Result & { password?: string; name?: string };
 const refresh = () => revalidatePath("/", "layout");
 const isId = (v: string) => /^[0-9a-f-]{36}$/.test(v);
 
-/** The advisor manages accounts: there is no sign-up, so this is the only way people are added. */
+/** The advisor manages accounts: issues them here and decides on teachers' applications (/register). */
 async function advisor() {
   const user = await requireUser("advisor");
   return { user, t: dictionaries[user.locale], d: await db() };
@@ -103,4 +108,46 @@ export async function setStudentGroup(id: string, groupId: string): Promise<Resu
     refresh();
     return { ok: true, message: t.admin.groupChanged };
   });
+}
+
+// ---------- teachers' applications ----------
+
+/** Tells the applicant by email when sending email is set up; otherwise they see the decision when signing in. */
+async function decisionEmail(to: string, locale: string, approved: boolean, note: string) {
+  if (!process.env.RESEND_API_KEY) return;
+  const t = dictionaries[isLocale(locale) ? locale : "ru"];
+  const url = `${appUrl()}${approved ? "/login" : "/register"}`;
+  await sendEmail(
+    to,
+    approved ? t.applications.mailApprovedSubject : t.applications.mailRejectedSubject,
+    approved ? t.applications.mailApproved(url) : t.applications.mailRejected(note, url),
+  ).catch((e) => console.error("decision email", e));
+}
+
+/** Approves: the teacher's account, a course per subject and the classes of the period appear at once. */
+export async function approveTeacher(id: string): Promise<Result> {
+  const { user, t, d } = await advisor();
+  if (!isId(id)) return { ok: false, message: t.common.error };
+  const r = await d.tx(async (q) => {
+    const r = await approveApplication(q, id, user.id);
+    // Waits in their inbox for the first sign-in.
+    if (r.ok) await notify(q, [r.profileId], "application_approved", { courses: r.courses, classes: r.classes }, { link: "/teacher/schedule", deliver: false });
+    return r;
+  });
+  if (!r.ok) return { ok: false, message: r.reason === "taken" ? t.applications.taken : t.applications.gone };
+  after(() => decisionEmail(r.email, r.locale, true, ""));
+  refresh();
+  return { ok: true, message: t.applications.approvedToast(r.courses, r.classes) };
+}
+
+/** Refuses; the reason is shown to the teacher when they sign in, and they may apply again. */
+export async function rejectTeacher(id: string, note: string): Promise<Result> {
+  const { user, t, d } = await advisor();
+  if (!isId(id)) return { ok: false, message: t.common.error };
+  const reason = String(note ?? "").trim().replace(/\s+/g, " ").slice(0, 500);
+  const a = await d.tx((q) => rejectApplication(q, id, user.id, reason));
+  if (!a) return { ok: false, message: t.applications.gone };
+  after(() => decisionEmail(a.email, a.locale, false, reason));
+  refresh();
+  return { ok: true, message: t.applications.rejectedToast };
 }

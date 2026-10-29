@@ -18,7 +18,9 @@ export type NotificationKind =
   | "absence_marked"
   | "absence_warning"
   | "excuse_new"
-  | "excuse_reviewed";
+  | "excuse_reviewed"
+  | "application_new"
+  | "application_approved";
 
 export interface NotificationPayload {
   course?: string;
@@ -41,6 +43,7 @@ export interface NotificationPayload {
   teacher?: string;
   sessionId?: string;
   classes?: number;
+  courses?: number;
   deadlines?: number;
   lines?: string[];
 }
@@ -107,6 +110,10 @@ export function renderNotification(t: Dict, l: Locale, kind: string, p: Notifica
       return { title: t.notif.excuseNew, body: [p.title, p.course, d(p.old)].filter(Boolean).join(" · ") };
     case "excuse_reviewed":
       return { title: p.approved ? t.notif.excuseApproved : t.notif.excuseRejected, body: [p.course, d(p.old)].filter(Boolean).join(" · ") };
+    case "application_new":
+      return { title: t.notif.applicationNew, body: [p.teacher, p.title].filter(Boolean).join(" · ") };
+    case "application_approved":
+      return { title: t.notif.applicationApproved, body: t.applications.welcome(p.courses ?? 0, p.classes ?? 0) };
     default:
       return { title: p.title ?? kind, body: p.body ?? "" };
   }

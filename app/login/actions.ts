@@ -11,6 +11,7 @@ import { sendEmail } from "@/lib/notifications/channels";
 import { appUrl } from "@/lib/telegram/api";
 import { LOCK_MIN, MAX_FAILS, loginGuard, recordAttempt } from "@/lib/security";
 import { tokenHash } from "@/lib/secret";
+import { applicationForSignIn } from "@/lib/db/applications";
 
 /** email: what was typed, so a failed attempt doesn't wipe it from the form. */
 export type AuthState = { error?: string; info?: string; email?: string } | undefined;
@@ -21,8 +22,9 @@ async function dict() {
 }
 
 /**
- * Accounts are issued by the university (lib/db/accounts.ts): there is no sign-up.
- * Where to go after signing in: back to the page that asked for it (e.g. a QR check-in), else the role's home.
+ * Accounts are issued by the university (lib/db/accounts.ts) or come from a teacher's application an advisor
+ * approved (/register). Where to go after signing in: back to the page that asked for it (e.g. a QR check-in),
+ * else the role's home.
  */
 const home = (role: string, form?: FormData) => safeNext(form?.get("next")) ?? homeFor(role);
 
@@ -33,6 +35,7 @@ const dummyHash = () => (dummy ??= bcrypt.hashSync("unios-not-a-password", 8));
 /**
  * Email + password. After MAX_FAILS wrong passwords the email is locked for LOCK_MIN minutes (an address that
  * keeps failing gets locked too); the last two attempts are counted down. Blocked accounts can't sign in.
+ * An email without an account may have a teacher's application: with its password, the form tells how it stands.
  */
 export async function signIn(_: AuthState, form: FormData): Promise<AuthState> {
   const t = await dict();
@@ -48,7 +51,13 @@ export async function signIn(_: AuthState, form: FormData): Promise<AuthState> {
     `select id, role, password_hash, disabled_at from profiles where email = $1`,
     [email],
   );
-  const ok = await bcrypt.compare(password, u?.password_hash ?? dummyHash());
+  const application = u ? null : await applicationForSignIn(d.q, email);
+  const ok = await bcrypt.compare(password, u?.password_hash ?? application?.password_hash ?? dummyHash());
+  // Only the application's author knows its password, so only they learn whether it is waiting or refused and why.
+  if (!u && application && ok)
+    return application.status === "pending"
+      ? { info: t.auth.applicationPending, email }
+      : { error: t.auth.applicationRejected(application.review_note), email };
   if (!u || !ok) {
     await recordAttempt(d.q, { email, ip, userAgent, ok: false });
     const left = MAX_FAILS - guard.emailFails - 1;
@@ -60,10 +69,10 @@ export async function signIn(_: AuthState, form: FormData): Promise<AuthState> {
   redirect(home(u.role, form));
 }
 
-/** Sign-in link by email; only offered when email sending (Resend) is configured. */
 /** Sign-in links one address may receive per 15 minutes. */
 const MAGIC_PER_WINDOW = 3;
 
+/** Sign-in link by email; only offered when email sending (Resend) is configured. */
 export async function sendMagicLink(_: AuthState, form: FormData): Promise<AuthState> {
   const t = await dict();
   if (!process.env.RESEND_API_KEY) return { error: t.common.error };

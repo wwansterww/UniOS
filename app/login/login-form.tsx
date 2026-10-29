@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Eye, EyeOff } from "lucide-react";
 import { Button, Field, Input, cn } from "@/components/ui";
@@ -36,7 +37,7 @@ export function LocaleSwitch() {
   );
 }
 
-function PasswordInput(props: React.ComponentProps<"input">) {
+export function PasswordInput(props: React.ComponentProps<"input">) {
   const { t } = useT();
   const [show, setShow] = useState(false);
   return (
@@ -92,7 +93,14 @@ export function LoginForm({ expired, magic, next }: { expired: boolean; magic: b
         )}
       </form>
 
-      <p className="mt-8 border-t border-border pt-5 text-center text-[13px] leading-relaxed text-muted">{t.auth.noSignup}</p>
+      <p className="mt-8 border-t border-border pt-5 text-center text-[13px] leading-relaxed text-muted">
+        {t.auth.noSignup}
+        <br />
+        {t.apply.linkLead}{" "}
+        <Link href="/register" className="underline underline-offset-2 transition-colors hover:text-fg">
+          {t.apply.link}
+        </Link>
+      </p>
     </div>
   );
 }

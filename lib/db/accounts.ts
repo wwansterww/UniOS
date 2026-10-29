@@ -1,4 +1,4 @@
-// The people of UniOS. There is no self sign-up: only these accounts exist.
+// The people UniOS starts with. Others are added by the advisor or come from teachers' applications (/register).
 // Passwords are generated once, per account, into accounts.local.json (never committed);
 // ACCOUNTS.local.md next to it lists every login for handing out.
 import fs from "node:fs";

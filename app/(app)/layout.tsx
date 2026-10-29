@@ -3,13 +3,19 @@ import { KeyRound } from "lucide-react";
 import { Shell } from "@/components/shell";
 import { getT } from "@/lib/i18n/server";
 import { requireUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { pendingApplicationCount } from "@/lib/db/applications";
 import { unreadCount } from "@/lib/queries";
 
 export default async function AppLayout({ children }: LayoutProps<"/">) {
   const user = await requireUser();
-  const [unread, { t }] = await Promise.all([unreadCount(user), getT()]);
+  const [unread, { t }, applications] = await Promise.all([
+    unreadCount(user),
+    getT(),
+    user.role === "advisor" ? db().then((d) => pendingApplicationCount(d.q)) : 0,
+  ]);
   return (
-    <Shell role={user.role} name={user.full_name} unread={unread}>
+    <Shell role={user.role} name={user.full_name} unread={unread} counts={{ "/advisor/applications": applications }}>
       {/* A temporary password from the advisor: ask for one of their own. */}
       {user.must_change_password && (
         <Link
