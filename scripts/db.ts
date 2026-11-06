@@ -13,6 +13,13 @@ import { resetDemo } from "../lib/db/demo-reset";
 
 const cmd = process.argv[2];
 
+/**
+ * Migrations and demo-reset run hundreds of statements in one long transaction. Supabase's transaction pooler
+ * (port 6543, what the site uses) drops such a session after a few minutes, so these jobs use its session mode
+ * (port 5432, same host and password) instead.
+ */
+const forLongJobs = (url: string | undefined) => url?.replace(/(\.pooler\.supabase\.com):6543\//, "$1:5432/");
+
 async function main() {
   if (cmd === "export") {
     const dir = path.join(process.cwd(), "supabase", "migrations");
@@ -26,7 +33,7 @@ async function main() {
   }
   if (cmd === "migrate") {
     if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set");
-    const d = await createDb(process.env.DATABASE_URL, null);
+    const d = await createDb(forLongJobs(process.env.DATABASE_URL), null);
     console.log("migrations applied");
     if (process.env.SEED_DEMO !== "false") console.log((await seedIfEmpty(d)) ? "demo data seeded" : "database not empty, seed skipped");
     process.exit(0);
@@ -39,7 +46,7 @@ async function main() {
   }
   if (cmd === "demo-reset") {
     const local = process.argv.includes("--local");
-    const url = local ? undefined : process.env.DATABASE_URL;
+    const url = local ? undefined : forLongJobs(process.env.DATABASE_URL);
     const dir = process.env.PGLITE_DIR ?? ".data/pglite";
     const target = url ? new URL(url).host : `local PGlite (${dir})`;
     if (!process.argv.includes("--yes")) {
