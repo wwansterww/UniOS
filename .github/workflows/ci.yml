@@ -26,6 +26,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Open-source licences (no GPL/AGPL, list up to date)
+        run: npm run licenses -- --check
       - run: npm run lint
       - name: Route types (needed by the type check)
         run: npx next typegen

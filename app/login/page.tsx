@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getUser, homeFor, safeNext } from "@/lib/auth";
 import { getT } from "@/lib/i18n/server";
@@ -11,7 +12,7 @@ export const metadata: Metadata = { title: "Вход" };
 
 export default async function LoginPage({ searchParams }: PageProps<"/login">) {
   const user = await getUser();
-  const { expired, next } = await searchParams;
+  const { expired, next, declined, withdrawn } = await searchParams;
   if (user) redirect(safeNext(next) ?? homeFor(user.role));
   const { t, locale } = await getT();
 
@@ -55,10 +56,20 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
           </header>
           <div className="fade-up mx-auto flex w-full max-w-[26rem] flex-1 flex-col justify-center py-6" style={{ "--i": 2 } as React.CSSProperties}>
             <div className="rounded-[1.75rem] border border-border bg-surface/85 p-6 shadow-[0_24px_60px_-28px_rgba(17,17,17,0.25)] backdrop-blur-md sm:p-8">
-              <LoginForm expired={!!expired} magic={!!process.env.RESEND_API_KEY} next={safeNext(next) ?? undefined} />
+              <LoginForm
+                expired={!!expired}
+                magic={!!process.env.RESEND_API_KEY}
+                next={safeNext(next) ?? undefined}
+                notice={withdrawn ? "withdrawn" : declined ? "declined" : undefined}
+              />
             </div>
           </div>
-          <p className="text-center text-[13px] text-muted lg:text-right">{t.auth.project}</p>
+          <p className="text-center text-[13px] text-muted lg:text-right">
+            {t.auth.project} ·{" "}
+            <Link href="/privacy" className="underline-offset-2 transition-colors hover:text-fg hover:underline">
+              {t.legal.privacy}
+            </Link>
+          </p>
         </section>
       </main>
     </I18nProvider>

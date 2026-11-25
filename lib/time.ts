@@ -99,6 +99,8 @@ export const formatTime = (d: Date, l: Locale = "ru") => fmt(l, { hour: "2-digit
 export const formatDay = (d: Date, l: Locale = "ru") => fmt(l, { weekday: "short", day: "numeric", month: "short" }).format(d);
 export const formatWeekday = (d: Date, l: Locale = "ru") => fmt(l, { weekday: "short" }).format(d);
 export const formatLongDay = (d: Date, l: Locale = "ru") => fmt(l, { weekday: "long", day: "numeric", month: "long" }).format(d);
+/** "25 ноября 2026 г." — dates of documents and consents. */
+export const formatDate = (d: Date, l: Locale = "ru") => fmt(l, { day: "numeric", month: "long", year: "numeric" }).format(d);
 export const formatDateTime = (d: Date, l: Locale = "ru") => `${formatDay(d, l)}, ${formatTime(d, l)}`;
 /** Short "пт 18:00" form used in change messages. */
 export const formatShort = (d: Date, l: Locale = "ru") => `${formatWeekday(d, l)} ${formatTime(d, l)}`;

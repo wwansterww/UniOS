@@ -56,7 +56,18 @@ export function PasswordInput(props: React.ComponentProps<"input">) {
   );
 }
 
-export function LoginForm({ expired, magic, next }: { expired: boolean; magic: boolean; next?: string }) {
+export function LoginForm({
+  expired,
+  magic,
+  next,
+  notice,
+}: {
+  expired: boolean;
+  magic: boolean;
+  next?: string;
+  /** After "I don't agree" on the consent screen, or after withdrawing consent in the profile. */
+  notice?: "declined" | "withdrawn";
+}) {
   const { t } = useT();
   const [inState, inAction, inPending] = useActionState(signIn, undefined);
   const [mlState, mlAction, mlPending] = useActionState(sendMagicLink, undefined);
@@ -68,6 +79,7 @@ export function LoginForm({ expired, magic, next }: { expired: boolean; magic: b
       <p className="mb-7 mt-1.5 text-sm text-muted">{t.auth.welcomeHint}</p>
 
       {expired && <p className="mb-4 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn">{t.auth.linkExpired}</p>}
+      {notice && <p className="mb-4 rounded-xl bg-surface-2 px-4 py-3 text-sm text-muted">{notice === "declined" ? t.legal.declined : t.legal.withdrawn}</p>}
       {state?.error && (
         <p className="mb-4 rounded-xl bg-danger-soft px-4 py-3 text-sm text-danger" role="alert">
           {state.error}

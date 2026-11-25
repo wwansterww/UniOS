@@ -1,14 +1,16 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowRight, Bell, CalendarPlus, GraduationCap, LineChart, Palette, Send, ShieldCheck, Users } from "lucide-react";
+import { ArrowRight, Bell, CalendarPlus, Fingerprint, GraduationCap, LineChart, Palette, Send, ShieldCheck, Users } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getT } from "@/lib/i18n/server";
 import { myGroups, myPrefs } from "@/lib/queries";
 import { appUrl, botToken, botUsername } from "@/lib/telegram/api";
-import { formatDateTime } from "@/lib/time";
+import { formatDate, formatDateTime } from "@/lib/time";
+import { activeConsent } from "@/lib/privacy";
+import { PRIVACY_VERSION } from "@/lib/legal/privacy";
 import { Badge, Card, PageTitle } from "@/components/ui";
-import { Appearance, CanvasForm, CopyField, JoinGroupForm, PasswordForm, PrefsForm, SignOutEverywhere, TelegramCard } from "./forms";
+import { Appearance, CanvasForm, CopyField, JoinGroupForm, PasswordForm, PrefsForm, PrivacyControls, SignOutEverywhere, TelegramCard } from "./forms";
 import { deviceName } from "@/lib/security";
 
 export const metadata: Metadata = { title: "Профиль" };
@@ -30,7 +32,7 @@ export default async function ProfilePage() {
   const { t, locale } = await getT();
   const student = user.role === "student";
   const d = await db();
-  const [prefs, groups, [canvas], logins] = await Promise.all([
+  const [prefs, groups, [canvas], logins, consent] = await Promise.all([
     myPrefs(user),
     student ? myGroups(user) : Promise.resolve([]),
     d.q<{ canvas_feed_url: string | null; canvas_synced_at: Date | null; canvas_error: string | null }>(
@@ -41,6 +43,7 @@ export default async function ProfilePage() {
       `select created_at, user_agent, ip from login_attempts where email = $1 and ok order by created_at desc limit 3`,
       [user.email],
     ),
+    activeConsent(d.q, user.id),
   ]);
   const icsUrl = `${appUrl()}/api/ics/${user.ics_token}`;
 
@@ -86,6 +89,19 @@ export default async function ProfilePage() {
           )}
           <SignOutEverywhere />
         </div>
+      </Section>
+
+      <Section id="privacy" icon={Fingerprint} title={t.legal.dataTitle} hint={t.legal.dataHint}>
+        {consent && (
+          <p className="mb-4 text-sm">
+            {t.legal.consentGiven(formatDate(new Date(consent.accepted_at), locale), consent.version)} ·{" "}
+            <Link href="/privacy" className="font-medium underline underline-offset-2">
+              {t.legal.privacy}
+            </Link>
+            {consent.version !== PRIVACY_VERSION && <span className="mt-1 block text-muted">{t.legal.consentOutdated}</span>}
+          </p>
+        )}
+        <PrivacyControls />
       </Section>
 
       {student && (
@@ -134,6 +150,18 @@ export default async function ProfilePage() {
           <LineChart size={16} /> {t.teacher.metricsLink} <ArrowRight size={14} />
         </Link>
       )}
+
+      <nav className="flex flex-wrap gap-x-4 gap-y-1 px-1 pt-2 text-[13px] text-muted">
+        <Link href="/privacy" className="hover:text-fg">
+          {t.legal.privacy}
+        </Link>
+        <Link href="/terms" className="hover:text-fg">
+          {t.legal.terms}
+        </Link>
+        <Link href="/licenses" className="hover:text-fg">
+          {t.legal.licenses}
+        </Link>
+      </nav>
     </div>
   );
 }

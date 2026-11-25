@@ -25,7 +25,8 @@ async function main() {
     const dir = path.join(process.cwd(), "supabase", "migrations");
     fs.mkdirSync(dir, { recursive: true });
     migrations.forEach((m, i) => {
-      const file = path.join(dir, `2026101700000${i}_${m.name.replace(/^\d+_/, "")}.sql`);
+      // Same-length timestamps keep the files in order for the Supabase CLI (…0009 before …0010).
+      const file = path.join(dir, `202610170000${String(i).padStart(2, "0")}_${m.name.replace(/^\d+_/, "")}.sql`);
       fs.writeFileSync(file, `-- Generated from lib/db/migrations.ts (${m.name}). Do not edit by hand.\n${m.sql.trim()}\n`);
       console.log("wrote", path.relative(process.cwd(), file));
     });

@@ -86,6 +86,8 @@ export async function handleUpdate(db: Db, u: Update, io: BotIO = telegramIO, no
 
   const [p] = await db.q<Profile>(`select id, full_name, locale, role from profiles where telegram_chat_id = $1`, [chatId]);
   const t = dictionaries[lang(p)];
+  // The privacy policy is open to everyone, linked or not (Telegram Bot Platform terms ask for an accessible policy).
+  if (command === "/privacy") return io.send(chatId, t.bot.privacy(`${appUrl()}/privacy`));
   if (!p) return io.send(chatId, t.bot.welcomeGuest);
 
   switch (command) {
@@ -394,6 +396,7 @@ export async function configureBot() {
       { command: "grades", description: "Оценки и GPA за семестр" },
       { command: "nb", description: "Пропуски: сколько ещё можно" },
       { command: "settings", description: "Когда напоминать о дедлайнах" },
+      { command: "privacy", description: "Политика конфиденциальности" },
     ],
   });
   await tg("setMyShortDescription", { short_description: t.bot.shortDescription });

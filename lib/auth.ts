@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { SignJWT, jwtVerify } from "jose";
 import { db } from "./db";
 import { isLocale, type Locale } from "./i18n";
+import { PRIVACY_VERSION } from "./legal/privacy";
 
 export interface User {
   id: string;
@@ -17,6 +18,8 @@ export interface User {
   ics_token: string;
   /** Signed in with a temporary password (set by the advisor): asked to choose their own. */
   must_change_password: boolean;
+  /** Agreed to the current privacy policy (lib/legal/privacy.ts); until then every page leads to /consent. */
+  consented: boolean;
 }
 
 const COOKIE = "uni_session";
@@ -62,9 +65,10 @@ export const getUser = cache(async (): Promise<User | null> => {
     const d = await db();
     const [u] = await d.q<User & { session_version: number; disabled_at: Date | null }>(
       `select id, email, role, full_name, locale, telegram_chat_id::text as telegram_chat_id, ics_token,
-              must_change_password, session_version, disabled_at
+              must_change_password, session_version, disabled_at,
+              exists (select 1 from consents c where c.profile_id = profiles.id and c.version = $2 and c.withdrawn_at is null) as consented
          from profiles where id = $1`,
-      [payload.sub],
+      [payload.sub, PRIVACY_VERSION],
     );
     // Blocked accounts and sessions from before a password change / "sign out everywhere" are no longer valid.
     if (!u || u.disabled_at || (Number(payload.v) || 0) !== u.session_version) return null;
@@ -77,6 +81,7 @@ export const getUser = cache(async (): Promise<User | null> => {
       telegram_chat_id: u.telegram_chat_id,
       ics_token: u.ics_token,
       must_change_password: u.must_change_password,
+      consented: u.consented,
     };
   } catch {
     return null;
@@ -92,6 +97,8 @@ export const safeNext = (v: unknown) => (typeof v === "string" && v.startsWith("
 export async function requireUser(role?: User["role"]): Promise<User> {
   const u = await getUser();
   if (!u) redirect("/login");
+  // Informed consent comes first (Law No. 94-V art. 7–8): pages and actions wait until the person has agreed.
+  if (!u.consented) redirect("/consent");
   if (role && u.role !== role) redirect(homeFor(u.role));
   return u;
 }

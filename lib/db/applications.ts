@@ -5,6 +5,8 @@ import type { Q } from "./core";
 import { occurrences, roomKey, type Application, type Booked, type Subject } from "../applications";
 import { currentTerm } from "../journal";
 import { logEvent } from "../reminders/engine";
+import { recordConsent } from "../privacy";
+import { PRIVACY_VERSION } from "../legal/privacy";
 import { DAY, HOUR, fromZoned } from "../time";
 
 /** Applications one network address may send per hour, one email per day, and open ones at a time overall. */
@@ -48,11 +50,11 @@ export async function applicationLimit(q: Q, email: string, ip: string, now = ne
 /** Stores a checked application. null when this email already has one under review. */
 export async function insertApplication(q: Q, a: Application, passwordHash: string, ip: string): Promise<string | null> {
   const rows = await q<{ id: string }>(
-    `insert into teacher_applications (email, full_name, password_hash, locale, note, subjects, starts_on, ends_on, ip)
-     values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
+    `insert into teacher_applications (email, full_name, password_hash, locale, note, subjects, starts_on, ends_on, ip, consent_version)
+     values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)
      on conflict (email) where status = 'pending' do nothing
      returning id`,
-    [a.email, a.full_name, passwordHash, a.locale, a.note, JSON.stringify(a.subjects), a.starts_on, a.ends_on, ip],
+    [a.email, a.full_name, passwordHash, a.locale, a.note, JSON.stringify(a.subjects), a.starts_on, a.ends_on, ip, PRIVACY_VERSION],
   );
   return rows[0]?.id ?? null;
 }
@@ -108,8 +110,20 @@ export async function bookedAround(q: Q, a: Pick<ApplicationRow, "subjects" | "s
  * "taken" when an account with this email appeared meanwhile.
  */
 export async function approveApplication(q: Q, id: string, advisorId: string, now = new Date()) {
-  const [a] = await q<{ email: string; full_name: string; password_hash: string; locale: string; subjects: Subject[]; starts_on: string; ends_on: string }>(
-    `select email, full_name, password_hash, locale, subjects, starts_on::text as starts_on, ends_on::text as ends_on
+  const [a] = await q<{
+    email: string;
+    full_name: string;
+    password_hash: string;
+    locale: string;
+    subjects: Subject[];
+    starts_on: string;
+    ends_on: string;
+    ip: string;
+    created_at: Date;
+    consent_version: string;
+  }>(
+    `select email, full_name, password_hash, locale, subjects, starts_on::text as starts_on, ends_on::text as ends_on,
+            ip, created_at, consent_version
        from teacher_applications where id = $1 and status = 'pending' for update`,
     [id],
   );
@@ -122,6 +136,9 @@ export async function approveApplication(q: Q, id: string, advisorId: string, no
     [a.email, a.full_name, a.password_hash, a.locale],
   );
   await q(`insert into notification_prefs (user_id) values ($1) on conflict do nothing`, [p.id]);
+  // The consent given on the form becomes the profile's: the teacher isn't asked again at the first sign-in.
+  if (a.consent_version)
+    await recordConsent(q, p.id, { version: a.consent_version, source: "application", ip: a.ip, at: new Date(a.created_at) });
   const groups = new Set((await q<{ id: string }>(`select id from groups`)).map((g) => g.id));
   const term = currentTerm(now);
   let classes = 0;

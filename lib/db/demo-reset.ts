@@ -15,17 +15,24 @@ export interface ResetSummary {
   telegramKept: number;
   passwordsKept: number;
   eventsKept: number;
+  consentsKept: number;
 }
 
 /**
  * Empties every app table and seeds the semester again relative to `now` (deadlines "in 1 hour", today's classes…).
  * Kept per email: password (also one the person changed), Telegram link, language, disabled state, notification
- * settings — and real usage events, so /metrics doesn't lose a pilot. Run inside one transaction.
+ * settings, privacy consents — and real usage events, so /metrics doesn't lose a pilot. Run inside one transaction.
  */
 export async function resetDemo(q: Q, now = new Date(), password?: (email: string) => string): Promise<ResetSummary> {
   const people = await q<{ email: string; password_hash: string | null; telegram_chat_id: string | null }>(
-    `select email, password_hash, telegram_chat_id::text as telegram_chat_id, locale, must_change_password, session_version, disabled_at
+    `select email, password_hash, telegram_chat_id::text as telegram_chat_id, locale, must_change_password, session_version, disabled_at,
+            consent_withdrawn_at
        from profiles`,
+  );
+  // Consents are legal records: a demo reset must not make people agree again (or forget that they withdrew).
+  const consents = await q(
+    `select p.email, c.version, c.source, c.ip, c.user_agent, c.accepted_at, c.withdrawn_at
+       from consents c join profiles p on p.id = c.profile_id`,
   );
   const prefs = await q(
     `select p.email, np.offsets_minutes, np.instant_enabled, np.channels, np.quiet_start::text as quiet_start,
@@ -43,12 +50,23 @@ export async function resetDemo(q: Q, now = new Date(), password?: (email: strin
 
   await q(
     `update profiles p set password_hash = coalesce(x.password_hash, p.password_hash), telegram_chat_id = x.telegram_chat_id::bigint,
-            locale = x.locale, must_change_password = x.must_change_password, session_version = x.session_version, disabled_at = x.disabled_at
+            locale = x.locale, must_change_password = x.must_change_password, session_version = x.session_version, disabled_at = x.disabled_at,
+            consent_withdrawn_at = x.consent_withdrawn_at
        from jsonb_to_recordset($1::jsonb) as x(email text, password_hash text, telegram_chat_id text, locale text,
-                                               must_change_password boolean, session_version int, disabled_at timestamptz)
+                                               must_change_password boolean, session_version int, disabled_at timestamptz,
+                                               consent_withdrawn_at timestamptz)
       where p.email = x.email`,
     [JSON.stringify(people)],
   );
+  if (consents.length)
+    await q(
+      `insert into consents (profile_id, version, source, ip, user_agent, accepted_at, withdrawn_at)
+       select p.id, x.version, x.source, x.ip, x.user_agent, x.accepted_at, x.withdrawn_at
+         from jsonb_to_recordset($1::jsonb) as x(email text, version text, source text, ip text, user_agent text,
+                                                 accepted_at timestamptz, withdrawn_at timestamptz)
+         join profiles p on p.email = x.email`,
+      [JSON.stringify(consents)],
+    );
   await q(
     `insert into notification_prefs (user_id, offsets_minutes, instant_enabled, channels, quiet_start, quiet_end, digest_enabled)
      select p.id, x.offsets_minutes, x.instant_enabled, x.channels, x.quiet_start::time, x.quiet_end::time, x.digest_enabled
@@ -76,5 +94,6 @@ export async function resetDemo(q: Q, now = new Date(), password?: (email: strin
     telegramKept: people.filter((p) => p.telegram_chat_id).length,
     passwordsKept: people.filter((p) => p.password_hash).length,
     eventsKept: events.length,
+    consentsKept: consents.length,
   };
 }

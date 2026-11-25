@@ -10,7 +10,7 @@ import { servedAs } from "@/lib/submissions";
 export async function GET(_req: NextRequest, ctx: RouteContext<"/api/submissions/[id]">) {
   const { id } = await ctx.params;
   const user = await getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!user?.consented) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!/^[0-9a-f-]{36}$/.test(id)) return NextResponse.json({ error: "not found" }, { status: 404 });
   const [row] = await withUser(user.id, (q) => q<{ name: string; data: Uint8Array }>(`select name, data from submission_files where id = $1`, [id]));
   if (!row) return NextResponse.json({ error: "not found" }, { status: 404 });

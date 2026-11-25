@@ -12,7 +12,7 @@ import { MIN } from "@/lib/time";
 export async function GET(req: NextRequest, ctx: RouteContext<"/api/checkin/[id]">) {
   const { id } = await ctx.params;
   const user = await getUser();
-  if (!user || user.role !== "teacher") return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (!user?.consented || user.role !== "teacher") return NextResponse.json({ error: "forbidden" }, { status: 403 });
   if (!/^[0-9a-f-]{36}$/.test(id)) return NextResponse.json({ error: "not found" }, { status: 404 });
   const d = await db();
   const [s] = await d.q<{ group_id: string; starts_at: Date; status: string }>(

@@ -1,6 +1,7 @@
 "use client";
 
 import { useTransition } from "react";
+import { unstable_rethrow } from "next/navigation";
 import { toast } from "sonner";
 
 type Result = { ok: boolean; message?: string; url?: string };
@@ -18,6 +19,8 @@ export function useAction() {
           onOk?.(r);
         } else toast.error(r.message ?? "Error");
       } catch (e) {
+        // redirect() from an action (e.g. to /consent or /login) is Next's to handle, not an error to show.
+        unstable_rethrow(e);
         toast.error((e as Error).message);
       }
     });

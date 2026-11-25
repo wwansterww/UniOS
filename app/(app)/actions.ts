@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { after } from "next/server";
 import { db, withUser } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
@@ -16,7 +17,8 @@ import { syncCanvas, validateFeedUrl } from "@/lib/canvas";
 import { dispatchNow } from "@/lib/jobs";
 import { notify } from "@/lib/notifications/notify";
 import bcrypt from "bcryptjs";
-import { startSession } from "@/lib/auth";
+import { endSession, startSession } from "@/lib/auth";
+import { withdrawConsent } from "@/lib/privacy";
 import { passwordProblem } from "@/lib/security";
 import { FILE_FORMATS, MAX_FILES, MAX_FILE_BYTES, MAX_FILE_MB, acceptsFile, isFileFormat, uploadState } from "@/lib/submissions";
 
@@ -388,4 +390,19 @@ export async function signOutEverywhere(): Promise<Result> {
   await startSession(user.id);
   await logEvent(d.q, user.id, "signed_out_everywhere", {});
   return { ok: true, message: dictionaries[user.locale].profile.loggedOutEverywhere };
+}
+
+/**
+ * Withdraws consent to the privacy policy (Law No. 94-V art. 8(7)): messages stop and every device is signed out
+ * right away; the remaining non-academic data goes within the grace period (lib/privacy.ts runRetention).
+ */
+export async function withdrawMyConsent(): Promise<void> {
+  const user = await requireUser();
+  const d = await db();
+  await d.tx(async (q) => {
+    await withdrawConsent(q, user.id);
+    await logEvent(q, user.id, "privacy_withdrawn", {});
+  });
+  await endSession();
+  redirect("/login?withdrawn=1");
 }

@@ -6,7 +6,7 @@ import { dictionaries } from "@/lib/i18n";
 
 export async function GET(req: NextRequest) {
   const user = await getUser();
-  if (!user) return NextResponse.json({ hits: [] }, { status: 401 });
+  if (!user?.consented) return NextResponse.json({ hits: [] }, { status: 401 });
   const raw = (req.nextUrl.searchParams.get("q") ?? "").trim().slice(0, 100);
   const like = `%${raw.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
   const l = user.locale;

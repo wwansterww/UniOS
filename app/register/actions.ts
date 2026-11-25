@@ -56,6 +56,10 @@ export async function submitApplication(draft: unknown): Promise<ApplyResult> {
   // A field people never see: bots fill it in. They get the success screen and nothing is stored.
   if (draft && typeof draft === "object" && (draft as { website?: unknown }).website) return { ok: true };
 
+  // Informed consent (Law No. 94-V art. 7–8): the box on the last step must be ticked.
+  if (!draft || typeof draft !== "object" || (draft as { consent?: unknown }).consent !== true)
+    return { ok: false, message: t.legal.applyConsentRequired, step: 2 };
+
   const d = await db();
   const groups = new Map((await d.q<{ id: string; name: string }>(`select id, name from groups`)).map((g) => [g.id, g.name]));
   const parsed = parseApplication(draft, { groups, today: dateKey(new Date()) });

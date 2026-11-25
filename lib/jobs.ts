@@ -3,9 +3,12 @@ import { syncAllCanvas } from "./canvas";
 import { defaultSenders, type Senders } from "./notifications/channels";
 import { notify } from "./notifications/notify";
 import { dispatchNotifications, dispatchReminders } from "./reminders/dispatch";
+import { runRetention } from "./privacy";
 import { DAY, dateKey, formatTime, startOfDay, zoned } from "./time";
 
 export const DIGEST_HOUR = 8;
+/** Storage limitation runs at night, Almaty time (lib/privacy.ts). */
+export const RETENTION_HOUR = 3;
 
 /** One scheduler run: called every 5 minutes by pg_cron (or every minute by the local scheduler). */
 export async function runTick(db: Db, senders: Senders = defaultSenders(), now = new Date()) {
@@ -14,7 +17,8 @@ export async function runTick(db: Db, senders: Senders = defaultSenders(), now =
   const reminders = await dispatchReminders(db, senders, now);
   const notifications = await dispatchNotifications(db, senders, now);
   const canvas = await syncAllCanvas(db, now).catch(() => 0);
-  return { reminders, notifications, digests, registration, canvas, at: now.toISOString() };
+  const retention = zoned(now).hour === RETENTION_HOUR ? await db.tx((q) => runRetention(q, now)) : null;
+  return { reminders, notifications, digests, registration, canvas, retention, at: now.toISOString() };
 }
 
 /** Right after a change: deliver instant messages without waiting for the next tick. */
@@ -33,7 +37,8 @@ export async function queueDigests(db: Db, now: Date) {
   return db.tx(async (q) => {
     const students = await q<{ id: string; locale: string }>(
       `select p.id, p.locale from profiles p join notification_prefs np on np.user_id = p.id
-        where p.role = 'student' and np.digest_enabled and (np.digest_last_sent is null or np.digest_last_sent < $1::date)
+        where p.role = 'student' and p.consent_withdrawn_at is null and np.digest_enabled
+          and (np.digest_last_sent is null or np.digest_last_sent < $1::date)
         for update of np skip locked`,
       [today],
     );

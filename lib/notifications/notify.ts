@@ -14,7 +14,14 @@ export async function notify(
   payload: NotificationPayload,
   opts: { link?: string; deliver?: boolean; force?: boolean; now?: Date } = {},
 ) {
-  const ids = [...new Set(userIds)];
+  const wanted = [...new Set(userIds)];
+  if (wanted.length === 0) return 0;
+  // People who withdrew consent to processing get nothing until they agree again (lib/privacy.ts).
+  const ids = (
+    await q<{ id: string }>(`select id from profiles where id::text = any(string_to_array($1, ',')) and consent_withdrawn_at is null`, [
+      wanted.join(","),
+    ])
+  ).map((r) => r.id);
   if (ids.length === 0) return 0;
   const now = opts.now ?? new Date();
   const prefs = await prefsFor(q, ids);

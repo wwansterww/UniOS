@@ -7,7 +7,8 @@ const ALLOWED = new Set(["app_open", "deadline_open", "search_used", "pwa_instal
 
 export async function POST(req: NextRequest) {
   const user = await getUser();
-  if (!user) return new NextResponse(null, { status: 401 });
+  // No usage analytics before the person has agreed to the privacy policy.
+  if (!user?.consented) return new NextResponse(null, { status: 401 });
   const body = (await req.json().catch(() => null)) as { name?: string; props?: Record<string, unknown> } | null;
   if (!body?.name || !ALLOWED.has(body.name)) return new NextResponse(null, { status: 400 });
   const props = Object.fromEntries(Object.entries(body.props ?? {}).slice(0, 10).map(([k, v]) => [k.slice(0, 40), typeof v === "string" ? v.slice(0, 200) : v]));

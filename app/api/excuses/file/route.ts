@@ -5,7 +5,7 @@ import { withUser } from "@/lib/db";
 /** A medical certificate file. RLS decides who may see it: the student, the class's teacher, the group's advisor. */
 export async function GET(req: NextRequest) {
   const user = await getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!user?.consented) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const session = req.nextUrl.searchParams.get("session") ?? "";
   const student = req.nextUrl.searchParams.get("student") ?? "";
   if (!/^[0-9a-f-]{36}$/.test(session) || !/^[0-9a-f-]{36}$/.test(student)) return NextResponse.json({ error: "not found" }, { status: 404 });

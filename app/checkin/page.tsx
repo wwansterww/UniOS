@@ -14,7 +14,9 @@ export default async function CheckinPage({ searchParams }: PageProps<"/checkin"
   const s = typeof sp.s === "string" ? sp.s : undefined;
   const code = typeof sp.code === "string" ? sp.code : undefined;
   const user = await getUser();
-  if (!user) redirect(`/login?next=${encodeURIComponent(`/checkin${s && code ? `?s=${s}&code=${code}` : ""}`)}`);
+  const here = `/checkin${s && code ? `?s=${s}&code=${code}` : ""}`;
+  if (!user) redirect(`/login?next=${encodeURIComponent(here)}`);
+  if (!user.consented) redirect(`/consent?next=${encodeURIComponent(here)}`);
   if (user.role !== "student") redirect(homeFor(user.role));
   const { locale } = await getT();
 

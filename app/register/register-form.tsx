@@ -40,6 +40,8 @@ export function RegisterForm({ groups, period }: { groups: Group[]; period: { st
   const [subjects, setSubjects] = useState<SubjectDraft[]>(() => [newSubject(groups.length === 1 ? groups[0].id : "")]);
   const [dates, setDates] = useState(period);
   const [website, setWebsite] = useState("");
+  const [consent, setConsent] = useState(false);
+  const [consentError, setConsentError] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
   const [pending, start] = useTransition();
@@ -61,6 +63,7 @@ export function RegisterForm({ groups, period }: { groups: Group[]; period: { st
 
   const submit = () =>
     start(async () => {
+      if (!consent) return setConsentError(true);
       setError(null);
       try {
         const r = await submitApplication({
@@ -70,6 +73,7 @@ export function RegisterForm({ groups, period }: { groups: Group[]; period: { st
           note: account.note,
           locale,
           website,
+          consent,
           starts_on: dates.starts_on,
           ends_on: dates.ends_on,
           subjects: subjects.map((s) => ({
@@ -439,6 +443,36 @@ export function RegisterForm({ groups, period }: { groups: Group[]; period: { st
                 {t.apply.weeks(weeks)} · {t.apply.classes(classes)}
               </p>
             </section>
+          )}
+
+          {/* Informed consent: unticked by default, the policy one click away. */}
+          <label
+            className={cn(
+              "flex cursor-pointer items-start gap-3 rounded-2xl border border-border p-4 text-sm leading-relaxed transition-colors sm:p-5",
+              consentError && "border-danger/60 bg-danger-soft",
+            )}
+          >
+            <input
+              type="checkbox"
+              checked={consent}
+              onChange={(e) => {
+                setConsent(e.target.checked);
+                if (e.target.checked) setConsentError(false);
+              }}
+              className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-narxoz)]"
+            />
+            <span>
+              {t.legal.applyConsentBefore}
+              <Link href="/privacy" target="_blank" className="font-medium underline underline-offset-2">
+                {t.legal.applyConsentLink}
+              </Link>
+              {t.legal.applyConsentAfter}
+            </span>
+          </label>
+          {consentError && (
+            <p className="-mt-2 text-sm text-danger" role="alert">
+              {t.legal.applyConsentRequired}
+            </p>
           )}
           {nav}
         </form>

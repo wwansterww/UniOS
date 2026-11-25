@@ -25,6 +25,8 @@ interface DueReminder {
   email: string;
   locale: string;
   channels: string[] | null;
+  /** The person withdrew consent to processing: nothing is sent to them (lib/privacy.ts). */
+  paused: boolean;
 }
 
 export function reminderTelegram(
@@ -62,7 +64,8 @@ export async function dispatchReminders(db: Db, senders: Senders, now = new Date
     const rows = await q<DueReminder>(
       `select r.id, r.student_id, r.deadline_id, r.kind, r.attempts, d.title, d.due_at, d.deleted_at,
               c.title as course_title, (ds.student_id is not null) as done, (d.file_types is not null) as files,
-              p.telegram_chat_id::text as chat_id, p.email, p.locale, np.channels
+              p.telegram_chat_id::text as chat_id, p.email, p.locale, np.channels,
+              (p.consent_withdrawn_at is not null) as paused
          from reminders r
          join deadlines d on d.id = r.deadline_id
          join profiles p on p.id = r.student_id
@@ -77,7 +80,7 @@ export async function dispatchReminders(db: Db, senders: Senders, now = new Date
     );
 
     for (const r of rows) {
-      if (r.deleted_at || r.done || new Date(r.due_at) <= now) {
+      if (r.deleted_at || r.done || r.paused || new Date(r.due_at) <= now) {
         await q(`update reminders set sent_at = $2, skipped = true where id = $1`, [r.id, now.toISOString()]);
         stats.skipped++;
         continue;

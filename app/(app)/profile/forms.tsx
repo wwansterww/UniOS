@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { useFormStatus } from "react-dom";
 import { useAction } from "@/components/use-action";
 import { useRouter } from "next/navigation";
-import { Check, Copy, KeyRound, Link2, LogOut, MonitorSmartphone, RefreshCw, Send, Unlink } from "lucide-react";
+import { Check, Copy, Download, KeyRound, Link2, LogOut, MonitorSmartphone, RefreshCw, Send, ShieldOff, Unlink } from "lucide-react";
 import { toast } from "sonner";
-import { Button, Field, Input, cn } from "@/components/ui";
+import { Button, Field, Input, buttonClass, cn } from "@/components/ui";
 import { useT } from "@/components/i18n";
 import { setTheme } from "@/components/theme-toggle";
 import { LOCALES } from "@/lib/i18n";
@@ -21,6 +22,7 @@ import {
   signOutEverywhere,
   telegramLink,
   telegramTest,
+  withdrawMyConsent,
 } from "../actions";
 import { signOut } from "@/app/login/actions";
 
@@ -326,6 +328,47 @@ export function SignOutEverywhere() {
   return (
     <Button variant="outline" size="sm" disabled={pending} onClick={() => run(() => signOutEverywhere())}>
       <MonitorSmartphone size={14} /> {t.profile.logoutEverywhere}
+    </Button>
+  );
+}
+
+/** "My data": download everything UniOS keeps (JSON) and withdraw consent, with one confirmation step. */
+export function PrivacyControls() {
+  const { t } = useT();
+  const [confirm, setConfirm] = useState(false);
+  return (
+    <div>
+      <a href="/api/me/export" download className={buttonClass("outline", "sm")}>
+        <Download size={14} /> {t.legal.download}
+      </a>
+      <p className="mt-2 text-xs text-muted">{t.legal.downloadHint}</p>
+      <div className="mt-5 border-t border-border pt-5">
+        {!confirm ? (
+          <Button variant="danger" size="sm" onClick={() => setConfirm(true)}>
+            <ShieldOff size={14} /> {t.legal.withdraw}
+          </Button>
+        ) : (
+          <div className="rounded-xl bg-danger-soft p-4">
+            <p className="text-sm leading-relaxed text-danger">{t.legal.withdrawWarn}</p>
+            {/* A form action: the server signs the person out and redirects, Next handles the navigation. */}
+            <form action={withdrawMyConsent} className="mt-3 flex flex-wrap gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => setConfirm(false)}>
+                {t.legal.cancel}
+              </Button>
+              <WithdrawButton label={t.legal.withdrawConfirm} />
+            </form>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WithdrawButton({ label }: { label: string }) {
+  const { pending } = useFormStatus();
+  return (
+    <Button type="submit" size="sm" className="bg-danger text-white hover:bg-danger/90" disabled={pending}>
+      <ShieldOff size={14} /> {label}
     </Button>
   );
 }
